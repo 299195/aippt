@@ -1,10 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 
 
 import json
 
 import re
+
+from difflib import SequenceMatcher
 
 from datetime import datetime
 
@@ -95,6 +97,10 @@ llm = OutlinePreviewAdapter()
 
 
 
+
+
+def _normalize_style(style: Any) -> str:
+    return "technical" if str(style or "").lower() == "technical" else "management"
 
 def utc_now_iso() -> str:
 
@@ -272,6 +278,40 @@ def _cleanup_text(text: str, max_len: int | None = None) -> str:
     return out
 
 
+
+def _normalize_compare_key(text: str) -> str:
+    cleaned = _cleanup_text(text, max_len=220).lower()
+    cleaned = re.sub(r"(本页|本章|本节|本部分|页面|章节|小标题|标题)", "", cleaned)
+    cleaned = re.sub(r"[\s\-_.,:;!?()\[\]{}<>/\\|]+", "", cleaned)
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff%]+", "", cleaned)
+    return cleaned
+
+
+def _is_title_redundant_line(line: str, title: str) -> bool:
+    line_key = _normalize_compare_key(line)
+    title_key = _normalize_compare_key(title)
+
+    if not line_key or not title_key:
+        return False
+    if line_key == title_key:
+        return True
+    if line_key.startswith(title_key) and (len(line_key) - len(title_key) <= 10):
+        return True
+    if title_key.startswith(line_key) and (len(title_key) - len(line_key) <= 6):
+        return True
+
+    ratio = SequenceMatcher(None, line_key, title_key).ratio()
+    return ratio >= 0.9 and abs(len(line_key) - len(title_key)) <= 8
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?:\n+|[。！？!?；;])", _normalize_newlines(text))
+    out: list[str] = []
+    for part in parts:
+        item = _cleanup_text(part, max_len=180)
+        if len(item) >= 6:
+            out.append(item)
+    return out
 def _parse_labeled_line(line: str) -> tuple[str | None, str]:
     m = re.match(r"^\s*([^:\uFF1A]{1,40})[\uFF1A:]\s*(.*)$", str(line or ""))
     if not m:
@@ -312,6 +352,13 @@ def _extract_labeled_section(raw_text: str, start_keys: tuple[str, ...], stop_ke
     return "\n".join(out_lines).strip()
 
 
+
+
+def _has_numeric_signal(title: str, bullets: list[str]) -> bool:
+    text = f"{title} {' '.join(bullets)}"
+    return bool(re.search(r"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?", text))
+
+
 def _infer_slide_type(title: str, bullets: list[str], page_index: int, total: int) -> str:
     full = f"{title} {' '.join(bullets)}".lower()
     title_lower = str(title or "").lower()
@@ -321,14 +368,49 @@ def _infer_slide_type(title: str, bullets: list[str], page_index: int, total: in
 
     if page_index == 1 or contains_any(title_lower, ("\u5c01\u9762", "\u6807\u9898", "cover", "title")):
         return "title"
-    if contains_any(full, ("\u98ce\u9669", "\u95ee\u9898", "\u6311\u6218", "\u963b\u585e", "\u9690\u60a3", "risk", "issue", "challenge", "blocker")):
+    if page_index == 2 or contains_any(title_lower, ("\u76ee\u5f55", "\u8bae\u7a0b", "agenda", "contents", "toc")):
+        return "toc"
+
+    # Avoid over-classifying slides as risk just because they contain "问题/issue".
+    strict_risk_keywords = (
+        "\u98ce\u9669",
+        "\u9690\u60a3",
+        "\u6f0f\u6d1e",
+        "\u5a01\u80c1",
+        "\u963b\u585e",
+        "\u963b\u788d",
+        "\u7f3a\u9677",
+        "\u5b89\u5168",
+        "\u5408\u89c4",
+        "risk",
+        "threat",
+        "vulnerability",
+        "blocker",
+    )
+    problem_keywords = ("\u95ee\u9898", "\u6311\u6218", "issue", "challenge")
+    mitigation_keywords = ("\u5e94\u5bf9", "\u7f13\u89e3", "\u6cbb\u7406", "\u89c4\u907f", "mitigation", "countermeasure")
+    non_risk_problem_context = ("\u95ee\u9898\u5b9a\u4e49", "\u95ee\u9898\u63d0\u51fa", "\u4f18\u5316\u95ee\u9898", "\u7814\u7a76\u95ee\u9898")
+
+    if contains_any(full, strict_risk_keywords):
+        return "risk"
+    if contains_any(full, problem_keywords) and contains_any(full, mitigation_keywords):
+        return "risk"
+    if contains_any(full, problem_keywords) and not contains_any(full, non_risk_problem_context):
+        if contains_any(full, ("\u5931\u6548", "\u635f\u5931", "\u5f02\u5e38", "\u6545\u969c", "failure", "loss")):
+            return "risk"
+
+    if contains_any(full, non_risk_problem_context):
+        return "summary"
+
+    if contains_any(full, ("\u653b\u51fb", "\u5a01\u80c1\u5efa\u6a21", "threat model", "attack")):
         return "risk"
     if contains_any(full, ("\u8ba1\u5212", "\u8def\u7ebf", "\u91cc\u7a0b\u7891", "\u9636\u6bb5", "\u8fdb\u5ea6", "\u6392\u671f", "timeline", "plan", "roadmap", "milestone")):
         return "timeline"
-    if contains_any(full, ("\u6570\u636e", "\u6307\u6807", "\u540c\u6bd4", "\u73af\u6bd4", "\u589e\u957f", "%", "roi", "gmv", "metric", "kpi", "trend")):
+
+    # Data page only when data-related wording and concrete numeric signal both exist.
+    if _has_numeric_signal(title, bullets) and contains_any(full, ("\u6570\u636e", "\u6307\u6807", "\u540c\u6bd4", "\u73af\u6bd4", "\u589e\u957f", "%", "roi", "gmv", "metric", "kpi", "trend")):
         return "data"
-    if total >= 8 and page_index in (4, 5):
-        return "data"
+
     return "summary"
 
 
@@ -380,39 +462,173 @@ def _extract_page_text_section(raw_text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _extract_bullets(text_section: str, fallback_points: list[str]) -> list[str]:
-    bullet_lines: list[str] = []
+_BULLET_PREFIX_RE = re.compile(r"^\s*(?:[-*]|[0-9]{1,2}\s*[\.\)\]])\s*")
+
+
+def _is_explicit_bullet_line(line: str) -> bool:
+    return bool(_BULLET_PREFIX_RE.match(str(line or "")))
+
+
+def _strip_bullet_prefix(line: str) -> str:
+    return _BULLET_PREFIX_RE.sub("", str(line or "")).strip()
+
+
+def _extract_text_blocks(text_section: str, title: str = "") -> list[str]:
     text_body = re.sub(r"```[\s\S]*?```", " ", _normalize_newlines(text_section))
 
-    for raw in text_body.splitlines():
-        line = _strip_markdown_prefix(raw)
-        label, value = _parse_labeled_line(line)
-        if label and _is_label(label, _ALL_LABEL_KEYS):
-            line = value
+    paragraphs: list[str] = []
+    current_lines: list[str] = []
+    seen_keys: set[str] = set()
 
-        cleaned = _cleanup_text(line, max_len=150)
-        if not cleaned:
+    def flush_current() -> None:
+        nonlocal current_lines
+        if not current_lines:
+            return
+        merged = _cleanup_text(" ".join(current_lines), max_len=280)
+        current_lines = []
+        if not merged:
+            return
+        if _is_title_redundant_line(merged, title):
+            return
+        key = _normalize_compare_key(merged)
+        if not key or key in seen_keys:
+            return
+        seen_keys.add(key)
+        paragraphs.append(merged)
+
+    for raw_line in text_body.split("\n"):
+        stripped = str(raw_line or "").strip()
+        if not stripped:
+            flush_current()
             continue
 
+        label, value = _parse_labeled_line(stripped)
+        source = value if (label and _is_label(label, _ALL_LABEL_KEYS)) else stripped
+        if not source:
+            continue
+        if _is_explicit_bullet_line(source):
+            continue
+
+        cleaned = _cleanup_text(source, max_len=220)
+        if not cleaned:
+            continue
+        if _is_title_redundant_line(cleaned, title):
+            continue
         if re.search(r"</?[A-Za-z_][A-Za-z0-9._:-]*", cleaned):
             continue
 
-        if cleaned not in bullet_lines:
-            bullet_lines.append(cleaned)
+        current_lines.append(cleaned)
 
-    if not bullet_lines:
+    flush_current()
+
+    if not paragraphs:
+        for sent in _split_sentences(text_body):
+            if _is_title_redundant_line(sent, title):
+                continue
+            key = _normalize_compare_key(sent)
+            if not key or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            paragraphs.append(sent)
+            if len(paragraphs) >= 3:
+                break
+
+    return paragraphs[:4]
+
+
+def _extract_bullets(text_section: str, fallback_points: list[str], title: str = "") -> list[str]:
+    bullet_lines: list[str] = []
+    seen_keys: set[str] = set()
+    text_body = re.sub(r"```[\s\S]*?```", " ", _normalize_newlines(text_section))
+
+    def push_candidate(raw_line: str) -> None:
+        cleaned = _cleanup_text(raw_line, max_len=180)
+        if not cleaned:
+            return
+        if re.search(r"</?[A-Za-z_][A-Za-z0-9._:-]*", cleaned):
+            return
+        if _is_title_redundant_line(cleaned, title):
+            return
+        key = _normalize_compare_key(cleaned)
+        if not key or key in seen_keys:
+            return
+        seen_keys.add(key)
+        bullet_lines.append(cleaned)
+
+    for raw in text_body.splitlines():
+        source = str(raw or "").strip()
+        if not source:
+            continue
+
+        label, value = _parse_labeled_line(source)
+        if label and _is_label(label, _ALL_LABEL_KEYS):
+            source = value
+        if not source:
+            continue
+
+        if _is_explicit_bullet_line(source):
+            push_candidate(_strip_bullet_prefix(source))
+            if len(bullet_lines) >= 6:
+                break
+            continue
+
+        cleaned = _cleanup_text(source, max_len=180)
+        if 8 <= len(cleaned) <= 36 and not re.search(r"[。！？!?；;]$", cleaned):
+            push_candidate(cleaned)
+            if len(bullet_lines) >= 6:
+                break
+
+    if len(bullet_lines) < 2:
         for point in fallback_points:
-            cleaned = _cleanup_text(point, max_len=150)
-            if cleaned and cleaned not in bullet_lines:
-                bullet_lines.append(cleaned)
+            push_candidate(str(point))
+            if len(bullet_lines) >= 4:
+                break
 
-    if not bullet_lines:
-        bullet_lines = ["Core conclusion", "Key evidence", "Next action"]
+    if len(bullet_lines) < 2:
+        for sent in _split_sentences(text_body):
+            if len(sent) < 10:
+                continue
+            push_candidate(sent)
+            if len(bullet_lines) >= 3:
+                break
 
-    while len(bullet_lines) < 3:
-        bullet_lines.append("Additional point")
+    while bullet_lines and _is_title_redundant_line(bullet_lines[0], title):
+        bullet_lines.pop(0)
 
-    return bullet_lines[:5]
+    return bullet_lines[:6]
+
+
+def _derive_content_format(summary_text: str, detail_points: list[str], text_blocks: list[str], slide_type: str) -> str:
+    if slide_type in {"risk", "timeline", "data"}:
+        return "typed_slide"
+
+    point_count = len(detail_points)
+    block_count = len(text_blocks)
+    has_summary = bool(summary_text)
+
+    if point_count == 0:
+        return "narrative_split" if block_count >= 2 else "narrative_banner"
+    if has_summary and point_count == 2:
+        return "summary_plus_two"
+    if has_summary and point_count == 3:
+        return "summary_plus_three"
+    if has_summary and point_count >= 4 and block_count >= 2:
+        return "center_hub_four"
+    if has_summary and point_count >= 4:
+        return "summary_plus_four"
+    if point_count == 3:
+        return "points_three_columns"
+    if point_count == 4:
+        return "points_four_grid"
+    if point_count >= 5:
+        return "points_five_split"
+    if has_summary and block_count >= 2:
+        return "top_bottom_story"
+    if has_summary:
+        return "left_summary_right_points"
+    if block_count >= 3:
+        return "four_quadrant_mixed"
+    return "mixed_content"
 
 
 def _extract_notes(raw_text: str, extra_fields: dict[str, str] | None) -> str:
@@ -433,6 +649,74 @@ def _extract_notes(raw_text: str, extra_fields: dict[str, str] | None) -> str:
     return merged or "Generated from banana workflow"
 
 
+
+
+def _extract_chart_data_from_text(title: str, bullets: list[str], notes: str) -> dict[str, Any] | None:
+    unit_candidates: list[str] = []
+    pairs: list[tuple[str, float]] = []
+
+    candidates = [str(x) for x in bullets]
+    candidates.extend([line.strip() for line in str(notes or "").splitlines() if line.strip()])
+
+    for raw in candidates:
+        line = _cleanup_text(raw, max_len=200)
+        if not line:
+            continue
+
+        m = re.search(r"([-+]?\d+(?:\.\d+)?)\s*(%|x|\u500d|ms|s|h|\u4e07\u5143|\u4ebf\u5143|\u4e07|\u5143|\u4e2a|\u4eba)?", line)
+        if not m:
+            continue
+
+        try:
+            value = float(m.group(1))
+        except Exception:
+            continue
+
+        unit = str(m.group(2) or "").strip()
+        if unit:
+            unit_candidates.append(unit)
+
+        label = line[: m.start()] + line[m.end() :]
+        label = re.sub(r"[\uff1a:\uff0c,\u3002\uff1b;\uff08\uff09()\[\]\-]+", " ", label)
+        label = re.sub(r"\s+", " ", label).strip()
+        if not label:
+            label = f"\u6307\u6807{len(pairs) + 1}"
+
+        pairs.append((label[:24], value))
+
+    if len(pairs) < 2:
+        return None
+
+    labels: list[str] = []
+    values: list[float] = []
+    seen: set[str] = set()
+    for label, value in pairs:
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+        values.append(value)
+        if len(labels) >= 6:
+            break
+
+    if len(labels) < 2:
+        return None
+
+    unit = ""
+    if unit_candidates:
+        counts: dict[str, int] = {}
+        for u in unit_candidates:
+            counts[u] = counts.get(u, 0) + 1
+        unit = max(counts.items(), key=lambda x: x[1])[0]
+
+    return {
+        "labels": labels,
+        "values": values,
+        "unit": unit,
+    }
+
+
 def _description_to_slide_payload(
     description_text: str,
     page_outline: dict[str, Any],
@@ -446,18 +730,76 @@ def _description_to_slide_payload(
     normalized_text = _normalize_newlines(description_text)
     title = _extract_title(normalized_text, fallback_title)
     page_text = _extract_page_text_section(normalized_text)
-    bullets = _extract_bullets(page_text, fallback_points)
-    notes = _extract_notes(normalized_text, extra_fields)
-    slide_type = _infer_slide_type(title, bullets, page_index, total_pages)
 
-    evidence = bullets[:3]
+    bullets = _extract_bullets(page_text, fallback_points, title=title)
+    text_blocks = _extract_text_blocks(page_text, title=title)
+
+    summary_text = ""
+    if text_blocks:
+        summary_text = _cleanup_text(text_blocks[0], max_len=240)
+    elif bullets:
+        summary_text = _cleanup_text(bullets[0], max_len=240)
+    elif fallback_points:
+        summary_text = _cleanup_text(str(fallback_points[0]), max_len=240)
+
+    detail_points: list[str] = []
+    seen_keys: set[str] = set()
+
+    def push_point(raw: str) -> None:
+        cleaned = _cleanup_text(raw, max_len=180)
+        if not cleaned:
+            return
+        if summary_text and _normalize_compare_key(cleaned) == _normalize_compare_key(summary_text):
+            return
+        key = _normalize_compare_key(cleaned)
+        if not key or key in seen_keys:
+            return
+        seen_keys.add(key)
+        detail_points.append(cleaned)
+
+    for item in bullets:
+        push_point(item)
+        if len(detail_points) >= 6:
+            break
+
+    if len(detail_points) < 2:
+        for item in fallback_points:
+            push_point(str(item))
+            if len(detail_points) >= 4:
+                break
+
+    if len(detail_points) < 2:
+        for sent in _split_sentences(page_text):
+            if len(sent) < 10:
+                continue
+            push_point(sent)
+            if len(detail_points) >= 3:
+                break
+
+    notes = _extract_notes(normalized_text, extra_fields)
+    slide_type = _infer_slide_type(title, detail_points, page_index, total_pages)
+
+    chart_data = _extract_chart_data_from_text(title, detail_points, notes) if slide_type == "data" else None
+    if slide_type == "data" and chart_data is None:
+        slide_type = "summary"
+
+    content_format = _derive_content_format(summary_text, detail_points, text_blocks, slide_type)
+
+    evidence_source = detail_points if detail_points else text_blocks
+    evidence = [str(x) for x in evidence_source[:3]]
+
     payload: dict[str, Any] = {
         "title": title,
-        "bullets": bullets,
+        "bullets": detail_points,
+        "detail_points": detail_points,
+        "summary_text": summary_text,
+        "text_blocks": text_blocks,
+        "content_format": content_format,
+        "layout_profile": content_format,
         "notes": notes,
         "slide_type": slide_type,
         "evidence": evidence,
-        "chart_data": None,
+        "chart_data": chart_data,
         "text": normalized_text,
         "generated_image_path": None,
     }
@@ -582,7 +924,7 @@ def generate_descriptions_task(task_id: str, project_id: str) -> None:
 
                     language="zh",
 
-                    detail_level="default",
+                    detail_level="detailed",
 
                 )
 
@@ -752,7 +1094,7 @@ def _collect_project_slides(project: Any, pages: list[Any]) -> list[dict[str, An
 
                 language="zh",
 
-                detail_level="default",
+                detail_level="detailed",
 
             )
 
@@ -827,23 +1169,19 @@ def _collect_project_slides(project: Any, pages: list[Any]) -> list[dict[str, An
 
 
         slide = {
-
             "page": idx + 1,
-
             "title": str(normalized.get("title") or page_outline["title"]),
-
             "bullets": [str(x) for x in list(normalized.get("bullets") or [])],
-
+            "detail_points": [str(x) for x in list(normalized.get("detail_points") or normalized.get("bullets") or [])],
+            "summary_text": str(normalized.get("summary_text") or ""),
+            "text_blocks": [str(x) for x in list(normalized.get("text_blocks") or [])],
+            "content_format": str(normalized.get("content_format") or ""),
+            "layout_profile": str(normalized.get("layout_profile") or ""),
             "notes": str(normalized.get("notes") or ""),
-
             "slide_type": str(normalized.get("slide_type") or "summary"),
-
             "evidence": normalized.get("evidence"),
-
             "chart_data": normalized.get("chart_data"),
-
             "generated_image_path": normalized.get("generated_image_path"),
-
         }
 
         slides.append(slide)
@@ -884,7 +1222,7 @@ def _ensure_slide_images(project: Any, project_id: str, pages: list[Any], slides
 
     project_title = str(project["title"] or "")
 
-    style = str(project["style"] or "management")
+    style = _normalize_style(project["style"])
 
 
 
@@ -972,6 +1310,109 @@ def _ensure_slide_images(project: Any, project_id: str, pages: list[Any], slides
 
 
 
+
+
+
+
+def _is_cover_or_toc_title(title: str) -> bool:
+    t = _cleanup_text(str(title or ""), max_len=120).lower()
+    if not t:
+        return False
+    return any(
+        k in t
+        for k in (
+            "\u5c01\u9762",
+            "\u6807\u9898\u9875",
+            "cover",
+            "title",
+            "\u76ee\u5f55",
+            "\u8bae\u7a0b",
+            "agenda",
+            "contents",
+            "toc",
+        )
+    )
+
+
+def _derive_toc_items(outline_titles: list[str], slides: list[dict[str, Any]]) -> list[str]:
+    # Prefer final slide titles so TOC exactly matches rendered body pages.
+    items: list[str] = []
+    for slide in slides:
+        slide_type = str(slide.get("slide_type") or "").lower()
+        title = _cleanup_text(str(slide.get("title") or ""), max_len=120)
+        if not title:
+            continue
+        if slide_type in {"title", "toc"}:
+            continue
+        if _is_cover_or_toc_title(title):
+            continue
+        items.append(title)
+
+    if items:
+        return items
+
+    # Fallback: derive from outline titles after removing cover/toc pages.
+    return [
+        _cleanup_text(str(x), max_len=120)
+        for x in outline_titles
+        if _cleanup_text(str(x), max_len=120) and not _is_cover_or_toc_title(str(x))
+    ]
+
+
+def _derive_export_topic(raw_title: str, material_text: str, outline_titles: list[str]) -> str:
+    raw = _cleanup_text(str(raw_title or ""), max_len=200)
+    mat = _cleanup_text(str(material_text or ""), max_len=300)
+
+    core = re.sub(r"(?i)\b(pptx?|slides?|deck)\b", " ", raw)
+    core = re.sub(
+        r"(\u8bf7|\u5e2e\u6211|\u7ed9\u6211|\u7ed9\u51fa|\u751f\u6210|\u5236\u4f5c|\u505a\u4e00\u4efd|\u505a\u4e2a|\u4e00\u4e2a|\u4e00\u4efd|\u5173\u4e8e|\u4e3b\u9898|\u6c47\u62a5|\u6f14\u793a\u6587\u7a3f|\u6f14\u793a)",
+        " ",
+        core,
+    )
+    core = re.sub(r"\s+", " ", core).strip(" -:\uff1a")
+
+    # Preserve/normalize acronyms such as rag -> RAG.
+    core = re.sub(r"[A-Za-z]{2,8}", lambda m: m.group(0).upper(), core)
+
+    toc_like = [
+        _cleanup_text(x, max_len=80)
+        for x in outline_titles
+        if _cleanup_text(x, max_len=80) and not _is_cover_or_toc_title(x)
+    ]
+    focus = "\u3001".join(toc_like[:2])
+
+    suffix = "\u7b54\u8fa9\u6c47\u62a5" if ("\u7b54\u8fa9" in raw or "\u7b54\u8fa9" in mat) else "\u4e13\u9898\u6c47\u62a5"
+
+    if core and focus:
+        if core.lower() in focus.lower():
+            title = f"{focus}{suffix}"
+        else:
+            title = f"{core}\uff1a{focus}{suffix}"
+    elif core:
+        title = core
+        if not any(k in title for k in ("\u6c47\u62a5", "\u7b54\u8fa9", "\u62a5\u544a")):
+            title = f"{title}{suffix}"
+    elif focus:
+        title = f"{focus}{suffix}"
+    else:
+        title = "\u9879\u76ee\u4e13\u9898\u6c47\u62a5"
+
+    title = re.sub(r"\s+", " ", title).strip()
+    if len(title) > 42:
+        title = title[:42].rstrip("\uff0c\u3002\uff1b\uff1a\u3001 ")
+
+    return title or "\u9879\u76ee\u4e13\u9898\u6c47\u62a5"
+
+
+def _derive_export_subtitle(style: str, page_count: int) -> str:
+    # Keep cover clean by default; user-provided subtitle should be passed explicitly.
+    return ""
+
+
+
+def _derive_theme_seed(topic: str, style: str, project_id: str, toc_items: list[str]) -> str:
+    sample = "|".join(toc_items[:3])
+    return f"{topic}|{style}|{project_id}|{sample}"
 
 
 def generate_ppt_task(task_id: str, project_id: str) -> None:
@@ -1071,21 +1512,22 @@ def generate_ppt_task(task_id: str, project_id: str) -> None:
 
 
         outline = [str(_safe_load_json(page["outline_content"], {}).get("title") or "") for page in pages]
-
-
+        toc_items = _derive_toc_items(outline, slides)
+        export_topic = _derive_export_topic(str(project["title"] or ""), str(project["material_text"] or ""), outline)
+        style = _normalize_style(project["style"])
+        export_subtitle = _derive_export_subtitle(style, len(outline))
+        theme_seed = _derive_theme_seed(export_topic, style, project_id, toc_items)
 
         exported = export_slides_to_pptx(
-
             slides,
-
             out_path,
-
-            str(project["template_id"] or "executive_clean"),
-
-            str(project["title"]),
-
+            str(project["template_id"] or "no_template"),
+            export_topic,
             outline,
-
+            subtitle=export_subtitle,
+            toc_items=toc_items,
+            style=style,
+            theme_seed=theme_seed,
         )
 
 
@@ -1280,7 +1722,7 @@ def rewrite_project(project_id: str, action: str) -> str:
 
     project_title = str(project["title"] or "")
 
-    image_style = action if action in {"management", "technical"} else str(project["style"] or "management")
+    image_style = action if action in {"management", "technical"} else _normalize_style(project["style"])
 
 
 
@@ -1352,7 +1794,7 @@ def rewrite_project(project_id: str, action: str) -> str:
 
         )
 
-    style = str(project["style"])
+    style = _normalize_style(project["style"])
 
     if action in {"management", "technical"}:
 
@@ -1367,21 +1809,21 @@ def rewrite_project(project_id: str, action: str) -> str:
     out_path = settings.export_dir / filename
 
     outline_titles = [item["title"] for item in outline]
-
-
+    toc_items = _derive_toc_items(outline_titles, rewritten_slides)
+    export_topic = _derive_export_topic(str(project["title"] or ""), str(project["material_text"] or ""), outline_titles)
+    export_subtitle = _derive_export_subtitle(style, len(outline_titles))
+    theme_seed = _derive_theme_seed(export_topic, style, project_id, toc_items)
 
     exported = export_slides_to_pptx(
-
         rewritten_slides,
-
         out_path,
-
-        str(project["template_id"] or "executive_clean"),
-
-        str(project["title"]),
-
+        str(project["template_id"] or "no_template"),
+        export_topic,
         outline_titles,
-
+        subtitle=export_subtitle,
+        toc_items=toc_items,
+        style=style,
+        theme_seed=theme_seed,
     )
 
 
@@ -1407,6 +1849,12 @@ def rewrite_project(project_id: str, action: str) -> str:
     )
 
     return pptx_url
+
+
+
+
+
+
 
 
 

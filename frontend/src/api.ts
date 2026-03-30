@@ -1,7 +1,7 @@
 ﻿import type { HistoryItem, JobDetail, ModelConfig, RewriteAction, StyleType, TemplateItem } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000/api";
-const FILE_BASE = import.meta.env.VITE_FILE_BASE ?? "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8001/api";
+const FILE_BASE = import.meta.env.VITE_FILE_BASE ?? "http://127.0.0.1:8001";
 
 export const fileUrl = (url: string | null): string => (url ? `${FILE_BASE}${url}` : "");
 

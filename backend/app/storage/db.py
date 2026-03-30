@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sqlite3
@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     style TEXT NOT NULL,
-    template_id TEXT NOT NULL DEFAULT 'executive_clean',
+    template_id TEXT NOT NULL DEFAULT 'no_template',
     status TEXT NOT NULL,
     outline_json TEXT NOT NULL,
     slides_json TEXT NOT NULL,
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS projects (
     outline_text TEXT NOT NULL DEFAULT '',
     material_text TEXT NOT NULL DEFAULT '',
     style TEXT NOT NULL DEFAULT 'management',
-    template_id TEXT NOT NULL DEFAULT 'executive_clean',
+    template_id TEXT NOT NULL DEFAULT 'no_template',
     target_pages INTEGER NOT NULL DEFAULT 8,
     status TEXT NOT NULL DEFAULT 'DRAFT',
     pptx_url TEXT,
@@ -101,7 +101,7 @@ def init_db() -> None:
             conn,
             "jobs",
             "template_id",
-            "ALTER TABLE jobs ADD COLUMN template_id TEXT NOT NULL DEFAULT 'executive_clean'",
+            "ALTER TABLE jobs ADD COLUMN template_id TEXT NOT NULL DEFAULT 'no_template'",
         )
         _ensure_column(
             conn,
@@ -300,3 +300,4 @@ def make_progress(total: int, completed: int = 0, failed: int = 0, current_step:
     if current_step:
         payload["current_step"] = current_step
     return json.dumps(payload, ensure_ascii=False)
+

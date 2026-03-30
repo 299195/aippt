@@ -1,4 +1,4 @@
-﻿export type StyleType = "management" | "technical";
+export type StyleType = "management" | "technical";
 export type RewriteAction = "concise" | "management" | "technical";
 export type TemplateId = string;
 
@@ -50,3 +50,4 @@ export interface ModelConfig {
   configured: boolean;
   base_url: string;
 }
+

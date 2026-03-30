@@ -23,6 +23,7 @@ frontend/node_modules/
 backend/exports/
 backend/exports/generated_images/
 backend/data/*.db
+backend/tools/php/
 data/
 
 # Temp

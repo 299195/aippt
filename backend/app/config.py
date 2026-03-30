@@ -55,7 +55,14 @@ class Settings(BaseModel):
 
     model_base_url: str = _env_or_default("MODEL_BASE_URL", MODEL_CONFIG.get("base_url", ""))
     model_api_key: str = _env_or_default("MODEL_API_KEY", MODEL_CONFIG.get("api_key", ""))
-    model_name: str = _env_or_default("MODEL_NAME", MODEL_CONFIG.get("model", ""))
+    model_endpoint_id: str = _env_or_default(
+        "MODEL_ENDPOINT_ID",
+        MODEL_CONFIG.get("endpoint_id", MODEL_CONFIG.get("model", "")),
+    )
+    model_name: str = _env_or_default(
+        "MODEL_NAME",
+        _env_or_default("MODEL_ENDPOINT_ID", MODEL_CONFIG.get("model", MODEL_CONFIG.get("endpoint_id", ""))),
+    )
     model_chat_path: str = _env_or_default("MODEL_CHAT_PATH", MODEL_CONFIG.get("chat_path", "/v1/chat/completions"))
     request_timeout_sec: int = _env_int("MODEL_TIMEOUT", int(MODEL_CONFIG.get("timeout", 60)))
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, List, Literal, Optional
@@ -29,7 +29,7 @@ class JobDetailResponse(BaseModel):
     job_id: str
     status: str
     style: StyleType
-    template_id: TemplateId = Field(default="executive_clean", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
+    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
     title: str
     outline: List[str]
     slides: List[SlideDTO]
@@ -41,7 +41,7 @@ class HistoryItem(BaseModel):
     job_id: str
     title: str
     style: StyleType
-    template_id: TemplateId = Field(default="executive_clean", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
+    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
     status: str
     created_at: datetime
 
@@ -49,6 +49,7 @@ class HistoryItem(BaseModel):
 class ModelConfigResponse(BaseModel):
     provider: str
     model: str
+    endpoint_id: Optional[str] = None
     use_mock: bool
     configured: bool
     base_url: str
@@ -60,7 +61,7 @@ class GenerateRequest(BaseModel):
     outline_text: str = Field(default="")
     outline: Optional[List[str]] = None
     style: StyleType = "management"
-    template_id: TemplateId = Field(default="executive_clean", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
+    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
     target_pages: int = Field(default=8, ge=8, le=12)
 
 
@@ -100,7 +101,7 @@ class ProjectCreateRequest(BaseModel):
     material_text: str = Field(default="")
     outline_text: str = Field(default="")
     style: StyleType = "management"
-    template_id: TemplateId = Field(default="executive_clean", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
+    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
     target_pages: int = Field(default=8, ge=8, le=12)
     creation_type: CreationType = "idea"
 
@@ -186,3 +187,5 @@ class ProjectListItemDTO(BaseModel):
     status: str
     created_at: datetime
     updated_at: datetime
+
+

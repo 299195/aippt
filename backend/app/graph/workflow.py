@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -175,7 +175,7 @@ def export_node(state: PPTState) -> PPTState:
     exported = export_slides_to_pptx(
         state.get("slides", []),
         out_path,
-        state.get("template_id", "executive_clean"),
+        state.get("template_id", "no_template"),
         state.get("title", ""),
         state.get("outline", []),
     )
@@ -193,7 +193,7 @@ def persist_node(state: PPTState) -> PPTState:
             "job_id": state["job_id"],
             "title": state["title"],
             "style": state["style"],
-            "template_id": state.get("template_id", "executive_clean"),
+            "template_id": state.get("template_id", "no_template"),
             "status": "done",
             "outline_json": json.dumps(state.get("outline", []), ensure_ascii=False),
             "slides_json": json.dumps(state.get("slides", []), ensure_ascii=False),
@@ -234,3 +234,4 @@ workflow = build_graph()
 
 def run_generation(state: PPTState) -> PPTState:
     return workflow.invoke(state)
+

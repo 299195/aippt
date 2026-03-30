@@ -21,6 +21,10 @@ const STATUS_LABEL = {
     done: "已完成",
     succeeded: "已完成",
     success: "已完成",
+    draft: "草稿",
+    outline_generated: "大纲已生成",
+    descriptions_generated: "文案已生成",
+    completed: "已完成",
     failed: "失败",
     error: "失败",
 };
@@ -36,7 +40,7 @@ function App() {
     const [materialText, setMaterialText] = useState("");
     const [outlineText, setOutlineText] = useState("");
     const [style, setStyle] = useState("management");
-    const [templateId, setTemplateId] = useState("executive_clean");
+    const [templateId, setTemplateId] = useState("no_template");
     const [pages, setPages] = useState(8);
     const [loading, setLoading] = useState(false);
     const [outlineLoading, setOutlineLoading] = useState(false);
@@ -74,7 +78,7 @@ function App() {
         return `模型配置信息：${modelText}`;
     }, [uploading, outlineLoading, loading, modelText]);
     const downloadUrl = useMemo(() => fileUrl(job?.pptx_url ?? null), [job?.pptx_url]);
-    const statusLabel = (status) => STATUS_LABEL[status] ?? "进行中";
+    const statusLabel = (status) => STATUS_LABEL[status.toLowerCase()] ?? "进行中";
     const formatHistoryTime = (value) => {
         const date = new Date(value);
         if (Number.isNaN(date.getTime()))
@@ -205,7 +209,7 @@ function App() {
             setJob(detail);
             setTitle(detail.title);
             setOutlineText(formatOutlineText(detail.outline));
-            setTemplateId(detail.template_id);
+            setTemplateId(templates.some((tpl) => tpl.id === detail.template_id) ? detail.template_id : "no_template");
             setStyle(detail.style);
             if (detail.slides.length) {
                 setPages(detail.slides.length);
@@ -242,15 +246,16 @@ function App() {
                                             else {
                                                 setTitle(value);
                                             }
-                                        }, placeholder: "\u8F93\u5165\u60A8\u60F3\u521B\u4F5C\u7684 PPT \u4E3B\u9898" }), _jsxs("div", { className: "composer-toolbar", children: [_jsxs("label", { className: "upload-plus", title: "\u4E0A\u4F20\u8D44\u6599", children: [_jsx("input", { type: "file", accept: ".md,.docx", onChange: (e) => handleUpload(e.target.files?.[0] ?? null) }), "+"] }), _jsxs("div", { className: "style-switch", role: "group", "aria-label": "\u98CE\u683C\u9009\u62E9", children: [_jsx("button", { type: "button", className: style === "management" ? "switch-seg active" : "switch-seg", onClick: () => {
-                                                            setStyle("management");
-                                                            setOutlineText("");
-                                                        }, children: "\u7BA1\u7406\u7248" }), _jsx("button", { type: "button", className: style === "technical" ? "switch-seg active" : "switch-seg", onClick: () => {
-                                                            setStyle("technical");
-                                                            setOutlineText("");
-                                                        }, children: "\u6280\u672F\u7248" })] }), _jsxs("div", { className: "page-stepper-wrap", children: [_jsx("span", { className: "page-stepper-label", children: "\u9875" }), _jsx("input", { className: "page-stepper", type: "number", min: 1, max: 60, step: 1, value: pages, onChange: (e) => {
+                                        }, placeholder: "\u8F93\u5165\u60A8\u60F3\u521B\u4F5C\u7684 PPT \u4E3B\u9898" }), _jsxs("div", { className: "composer-toolbar", children: [_jsxs("label", { className: "upload-plus", title: "\u4E0A\u4F20\u8D44\u6599", children: [_jsx("input", { type: "file", accept: ".md,.docx", onChange: (e) => handleUpload(e.target.files?.[0] ?? null) }), "+"] }), _jsx("div", { className: "style-switch", role: "group", "aria-label": "\u98CE\u683C\u9009\u62E9", children: [
+                                                    ["management", "管理版"],
+                                                    ["technical", "技术版"],
+                                                ].map(([styleKey, label]) => (_jsx("button", { type: "button", className: style === styleKey ? "switch-seg active" : "switch-seg", onClick: () => {
+                                                        setStyle(styleKey);
+                                                        setOutlineText("");
+                                                    }, children: label }, styleKey))) }), _jsxs("div", { className: "page-stepper-wrap", children: [_jsx("span", { className: "page-stepper-label", children: "\u9875" }), _jsx("input", { className: "page-stepper", type: "number", min: 8, max: 12, step: 1, value: pages, onChange: (e) => {
                                                             const value = Number(e.target.value);
-                                                            setPages(Number.isFinite(value) ? value : 1);
+                                                            const clamped = Number.isFinite(value) ? Math.min(12, Math.max(8, value)) : 8;
+                                                            setPages(clamped);
                                                             setOutlineText("");
                                                         } })] }), _jsx("div", { className: "toolbar-spacer" }), _jsx("button", { className: "btn btn-main", disabled: outlineLoading, onClick: handleGenerateOutline, children: outlineLoading ? "生成中..." : "生成大纲" })] })] }), materialText && _jsx("p", { className: "upload-tip", children: "\u8D44\u6599\u5DF2\u5BFC\u5165\uFF0C\u53EF\u76F4\u63A5\u751F\u6210\u5927\u7EB2" }), _jsxs("div", { className: "outline-actions", children: [_jsx("button", { className: "btn btn-primary", disabled: loading || !parseOutlineText(outlineText).length, onClick: handleGenerate, children: loading ? "处理中..." : "生成PPT" }), downloadUrl ? (_jsx("a", { className: "btn text-action", href: downloadUrl, target: "_blank", rel: "noreferrer", children: "\u4E0B\u8F7DPPTX" })) : (_jsx("span", { className: "btn text-action disabled", children: "\u4E0B\u8F7DPPTX" })), _jsxs("div", { className: `rewrite-menu ${loading || !jobId ? "disabled" : ""} ${rewriteOpen ? "open" : ""}`, onMouseEnter: () => {
                                             if (!loading && jobId)

@@ -42,7 +42,7 @@ class LLMAdapter:
         self.client = ModelClient()
         if not self.use_mock and not self.client.enabled():
             raise RuntimeError(
-                "模型未配置完整。请设置 model_provider.json 或 MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME，或将 USE_MOCK_LLM=true。"
+                "模型未配置完整。请设置 model_provider.json 或 MODEL_BASE_URL / MODEL_API_KEY / MODEL_NAME (或 MODEL_ENDPOINT_ID)，或将 USE_MOCK_LLM=true。"
             )
 
     def _normalize(self, text: str) -> str:

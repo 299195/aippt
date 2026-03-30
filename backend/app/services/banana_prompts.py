@@ -1,4 +1,4 @@
-﻿"""Banana prompt templates used by the generation workflow."""
+"""Banana prompt templates used by the generation workflow."""
 
 from __future__ import annotations
 
@@ -40,9 +40,9 @@ LANGUAGE_CONFIG = {
 }
 
 DETAIL_LEVEL_SPECS = {
-    "concise": "文字极致地压缩和精简，每条要点用一个核心词语或数据代替，例如效率↑80%",
-    "default": "清晰明了，每条要点控制在15-20字以内, 避免冗长的句子和复杂的表述",
-    "detailed": "忠于原文的基础上做到内容详实，逻辑清晰。",
+    "concise": "每页给出3-4条高密度要点，尽量短句但仍保留事实和结论。",
+    "default": "每页给出4-5条完整要点，每条20-40字，覆盖背景、方法、结果与结论。",
+    "detailed": "每页给出5-7条完整内容，优先引用输入资料中的事实/数据，形成可直接上屏的讲解文字。",
 }
 
 _OUTLINE_JSON_FORMAT = """\
@@ -178,7 +178,7 @@ You can organize the content in two ways:
 {_OUTLINE_JSON_FORMAT}
 
 Choose the format that best fits the content. Use parts when the PPT has clear major sections.
-Unless otherwise specified, the first page should be kept simplest, containing only the title, subtitle, and presenter information.
+Always include a cover page as page 1 and an agenda page as page 2. Page 1 should contain only polished presentation title/subtitle (not a raw copy of user prompt). Page 2 should be agenda and must align with subsequent page titles.
 
 The user's request: {idea_prompt}.
 {_format_requirements(project_context.outline_requirements)}Now generate the outline, don't include any other text.
@@ -227,7 +227,7 @@ You can organize the content in two ways:
 Constraints:
 - Title should not contain page number.
 - Choose the format that best fits the content. Use parts when the PPT has clear major sections.
-- Unless otherwise specified, the first page should be kept simplest, containing only the title, subtitle, and presenter information.
+- Always include a cover page as page 1 and an agenda page as page 2. Page 1 should contain only polished presentation title/subtitle (not a raw copy of user prompt). Page 2 should be agenda and must align with subsequent page titles.
 
 The user's request: {idea_prompt}.
 {_format_requirements(project_context.outline_requirements)}Now generate the outline, strictly follow the format provided above, don't include any other text. Output `<!-- END -->` on the last line when finished.
@@ -367,40 +367,87 @@ def get_page_description_prompt(
     extra_fields: list | None = None,
 ) -> str:
     original_input = _get_original_input(project_context)
+    detail_instruction = DETAIL_LEVEL_SPECS.get(detail_level, DETAIL_LEVEL_SPECS["default"])
+    page_title = str(page_outline.get("title") or "").strip()
+    page_points = [str(x).strip() for x in list(page_outline.get("points") or []) if str(x).strip()]
+    page_points_text = "\n".join([f"- {p}" for p in page_points]) if page_points else "- （无显式要点，请按主题与资料补全）"
 
-    detail_level_specs = {
-        "concise": "文字极致地压缩和精简",
-        "default": "清晰明了，每条要点控制在15-20字以内, 避免冗长的句子和复杂的表述",
-        "detailed": "忠于原文的基础上做到内容详实，逻辑清晰。",
-    }
+    outline_json = json.dumps(outline, ensure_ascii=False, indent=2)
+
+    body_titles: list[str] = []
+    for idx, item in enumerate(outline or []):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        title_low = title.lower()
+        if idx == 0:
+            continue
+        if any(k in title_low for k in ("agenda", "contents", "toc", "目录", "议程")):
+            continue
+        body_titles.append(title)
+
+    toc_reference = "\n".join([f"{i + 1}. {t}" for i, t in enumerate(body_titles)]) or "（后续标题待模型补全）"
+    is_toc_page = page_index == 2 or any(k in page_title.lower() for k in ("agenda", "contents", "toc", "目录", "议程"))
+
+    cover_rule = "- 当前为封面页：只输出标题、副标题、演讲人/单位/日期，不要正文段落、图表或数据结论。" if page_index == 1 else ""
+    toc_rule = (
+        "- 当前为目录页：页面文字必须是目录项，且顺序与后续页面标题完全一致。\n"
+        f"  目录目标如下：\n{toc_reference}"
+        if is_toc_page
+        else ""
+    )
+    body_rule = (
+        "- 普通内容页：页面文字至少4条，建议5-6条，覆盖背景/问题、方法/方案、关键证据、结论影响、下一步。"
+        if (page_index != 1 and not is_toc_page)
+        else ""
+    )
 
     prompt = f"""\
-我们正在为PPT的每一页生成内容描述。
-用户的原始需求是：\n{original_input}\n
-我们已经有了完整的大纲：\n{outline}\n{part_info}
-{_format_requirements(project_context.description_requirements, "description")}现在请为第 {page_index} 页生成描述：
-{page_outline}
-{"**除非特殊要求，第一页的内容需要保持极简，只放标题副标题以及演讲人等（输出到标题后）, 不添加任何素材。**" if page_index == 1 else ""}
-## 重要提示
-生成的"页面文字"部分会直接渲染到PPT页面上，因此请务必不要包含任何额外的说明性文字或注释。
+你是资深咨询顾问 + 演示文稿撰写专家。请为单页PPT生成“可直接上屏”的完整文字内容。
 
-## 输出格式
+用户原始需求：
+{original_input}
+
+完整大纲：
+{outline_json}
+
+当前页信息（第 {page_index} 页）{part_info}：
+- 页面标题：{page_title}
+- 页面要点：
+{page_points_text}
+
+{_format_requirements(project_context.description_requirements, "description")}## 生成要求
+- 生成的“页面文字”会直接渲染到PPT，请只输出可展示内容，不要解释你在做什么。
+- 正文第一条不得与页面标题重复或近似改写。
+- 内容必须基于用户主题和输入资料，避免空泛套话。
+- 若资料中没有明确数字，禁止编造数据、图表结论或百分比。
+- {detail_instruction}
+{cover_rule}
+{toc_rule}
+{body_rule}
+
+## 输出格式（严格遵守）
+页面标题：[与当前页一致或更自然的标题]
 
 页面文字：
+- [要点1]
+- [要点2]
+- [要点3]
+- [要点4]
+[可继续补充第5-6条]
 
-[此处使用markdown直接放置正文文字, 细致程度要求：{detail_level_specs[detail_level]}\n\n, 可包含latex公式、表格等内容, 不要重复添加]
-
-图片素材:
-[如果文件中存在图片请积极添加； 否则忽略图片素材字段]
+图片素材：
+[仅在参考文件中存在可用图片时，使用 markdown 图片链接；否则省略该字段]
 {_format_extra_field_instructions(extra_fields)}
 
 ## 关于图片
-如果参考文件中包含以 /files/ 开头的本地文件URL图片（例如 /files/mineru/xxx/image.png），请将这些图片以markdown格式输出，例如：![图片描述](/files/mineru/xxx/image.png)。这些图片会被包含在PPT页面中。
+如果参考文件中包含以 /files/ 开头的本地文件URL图片（例如 /files/mineru/xxx/image.png），请将这些图片以 markdown 格式输出，例如：![图片描述](/files/mineru/xxx/image.png)。
 {get_language_instruction(language)}
 """
 
     return _build_prompt(prompt, project_context.reference_files_content)
-
 
 def get_all_descriptions_stream_prompt(
     project_context: ProjectContextLike,
@@ -411,6 +458,7 @@ def get_all_descriptions_stream_prompt(
     extra_fields: list | None = None,
 ) -> str:
     original_input = _get_original_input(project_context)
+    detail_instruction = DETAIL_LEVEL_SPECS.get(detail_level, DETAIL_LEVEL_SPECS["default"])
 
     outline_lines = []
     for i, page in enumerate(flat_pages):
@@ -419,40 +467,68 @@ def get_all_descriptions_stream_prompt(
         outline_lines.append(f"第 {i + 1} 页：{page.get('title', '')}{part_str}\n  要点：{points_str}")
     pages_outline_text = "\n".join(outline_lines)
 
+    toc_targets: list[str] = []
+    for idx, page in enumerate(flat_pages):
+        title = str(page.get("title") or "").strip()
+        if not title:
+            continue
+        title_low = title.lower()
+        if idx == 0:
+            continue
+        if any(k in title_low for k in ("agenda", "contents", "toc", "目录", "议程")):
+            continue
+        toc_targets.append(title)
+    toc_targets_text = "\n".join([f"{i + 1}. {t}" for i, t in enumerate(toc_targets)]) or "（后续标题待模型补全）"
+
     prompt = f"""\
-我们正在为PPT的每一页生成内容描述。
-用户的原始需求是：\n{original_input}\n
-完整大纲如下：
+你是资深咨询顾问 + 演示文稿撰写专家。请按大纲逐页生成“可直接渲染到PPT”的完整页面内容。
+
+用户原始需求：
+{original_input}
+
+完整页级大纲：
 {pages_outline_text}
 
-{_format_requirements(project_context.description_requirements, "description")}请为每一页依次生成描述。先输出 `<!-- BEGIN -->` 标记开始，然后逐页输出内容，每页用 `<!-- PAGE_END -->` 结束，全部完成后输出 `<!-- END -->`。
+{_format_requirements(project_context.description_requirements, "description")}请按页顺序输出，先输出 `<!-- BEGIN -->`，每页结尾输出 `<!-- PAGE_END -->`，最后输出 `<!-- END -->`。
 
-## 重要提示
-- 生成的页面文字会直接渲染到PPT页面上，请务必不要包含任何额外的说明性文字或注释。
-- **第一页（封面页）保持极简**，只放标题、副标题、演讲人等信息，不添加任何素材。
-- 细致程度要求：{DETAIL_LEVEL_SPECS.get(detail_level, DETAIL_LEVEL_SPECS['default'])}
+## 统一硬性约束
+- 页面文字会直接上屏，不要输出解释性旁白或注释。
+- 每页正文第一条不得与该页标题重复或近似改写。
+- 内容必须基于主题和资料，避免空泛套话。
+- 若资料没有明确数字，禁止编造图表数据或百分比。
+- 细致程度：{detail_instruction}
 
-## 输出格式
-每页默认包含"页面文字"和"图片素材"两个部分。图片素材用于引用参考文件中的图片（以 /files/ 开头的本地路径），如果参考文件中没有相关图片则省略该部分。
+## 页面约束
+- 第1页封面：只写标题、副标题、演讲人/单位/日期，不写正文段落、图表结论。
+- 目录页（通常第2页）：目录项必须与后续页面标题严格对应、顺序一致。目录目标如下：
+{toc_targets_text}
+- 普通内容页：至少4条，建议5-6条，覆盖背景/问题、方法/方案、关键证据、结论影响、下一步。
+
+## 输出格式（严格遵守）
 ```
 <!-- BEGIN -->
+页面标题：[第1页标题]
+
 页面文字：
-[第1页文字内容，可包含标题、副标题、要点、latex公式、表格等，根据实际需求选择，避免堆砌和重复]
+- [要点1]
+- [要点2]
+- [要点3]
+- [要点4]
+[可继续补充第5-6条]
 
 图片素材：
-[如果参考文件中存在相关图片，以markdown格式引用，如 ![描述](/files/xxx/image.png)；否则省略此部分]
+[如果参考文件存在可用图片，使用 markdown 链接，如 ![描述](/files/xxx/image.png)；否则省略该字段]
 {_format_extra_field_instructions(extra_fields)}
 <!-- PAGE_END -->
 ...
 <!-- END -->
 ```
 
-现在请开始生成，严格按照上述格式输出。
+现在开始生成，并严格遵守格式。
 {get_language_instruction(language)}
 """
 
     return _build_prompt(prompt, project_context.reference_files_content)
-
 
 def get_description_split_prompt(
     project_context: ProjectContextLike,
@@ -711,3 +787,6 @@ Focus on:
 Output a concise style description in Chinese that can be directly used as a style prompt for PPT generation.
 Only output the style description text, no other content.
 """
+
+
+

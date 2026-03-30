@@ -1,4 +1,4 @@
-﻿"""Banana-style AI service adapted for the FastAPI backend."""
+"""Banana-style AI service adapted for the FastAPI backend."""
 
 from __future__ import annotations
 
@@ -198,12 +198,27 @@ class BananaAIService:
         if self.use_mock:
             return self._mock_generate_outline(project_context)
 
-        prompt = get_outline_generation_prompt(project_context, language)
-        data = self._generate_json(prompt, temperature=0.5)
-        if not isinstance(data, list):
-            raise RuntimeError("outline output is not list")
-        pages = self.flatten_outline(data)
-        return [self._normalize_page(page, idx + 1) for idx, page in enumerate(pages)]
+        # Primary path: strict JSON outline response.
+        try:
+            prompt = get_outline_generation_prompt(project_context, language)
+            data = self._generate_json(prompt, temperature=0.5)
+            if not isinstance(data, list):
+                raise RuntimeError("outline output is not list")
+            pages = self.flatten_outline(data)
+            normalized = [self._normalize_page(page, idx + 1) for idx, page in enumerate(pages)]
+            if normalized:
+                return normalized
+        except Exception:
+            logger.warning("outline json path failed, fallback to markdown path", exc_info=True)
+
+        # Fallback path: markdown outline parsing (more tolerant to model format drift).
+        md_prompt = get_outline_generation_prompt_markdown(project_context, language)
+        md_text = self._generate_text(md_prompt, temperature=0.4)
+        md_pages = self.parse_markdown_outline(md_text)
+        normalized = [self._normalize_page(page, idx + 1) for idx, page in enumerate(md_pages)]
+        if normalized:
+            return normalized
+        raise RuntimeError("outline generation failed in both json and markdown paths")
 
     def generate_outline_stream(self, project_context: BananaProjectContext, language: str | None = None):
         if self.use_mock:
@@ -928,33 +943,94 @@ def make_project_context_from_row(project_row: Any) -> BananaProjectContext:
     )
 
 
+
+
+
+def _normalize_outline_title(raw: str) -> str:
+    txt = str(raw or "").strip()
+    txt = re.sub(r"^\s*第?\s*\d+\s*页?\s*[:：.、\)\]]\s*", "", txt)
+    txt = re.sub(r"\s+", " ", txt).strip(" -:：\t\n")
+    return txt
+
+
+def _is_cover_title(title: str) -> bool:
+    t = _normalize_outline_title(title).lower()
+    if not t:
+        return False
+    keywords = (
+        "封面", "标题页", "title", "cover", "front page", "opening",
+    )
+    return any(k in t for k in keywords)
+
+
+def _is_toc_title(title: str) -> bool:
+    t = _normalize_outline_title(title).lower()
+    if not t:
+        return False
+    keywords = (
+        "目录", "议程", "agenda", "contents", "table of contents", "toc",
+    )
+    return any(k in t for k in keywords)
+
+
 def enforce_target_pages(pages: list[dict[str, Any]], target_pages: int) -> list[dict[str, Any]]:
     target = max(8, min(12, int(target_pages)))
-    normalized = [dict(page) for page in pages if isinstance(page, dict)]
+    normalized_in = [dict(page) for page in pages if isinstance(page, dict)]
 
-    if len(normalized) > target:
-        return normalized[:target]
+    # Keep only meaningful body pages; cover/toc are always re-inserted in fixed slots.
+    body: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
 
-    seed = random.Random(len(normalized) * 9973 + target)
-    while len(normalized) < target:
-        idx = len(normalized) + 1
-        if normalized:
-            ref = normalized[min(len(normalized) - 1, seed.randrange(len(normalized)))]
-            title = str(ref.get("title") or f"专题分析{idx}")
+    for page in normalized_in:
+        title = _normalize_outline_title(page.get("title") or "")
+        if not title:
+            continue
+        if _is_cover_title(title) or _is_toc_title(title):
+            continue
+
+        key = title.lower()
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+
+        points = [str(x).strip() for x in list(page.get("points") or []) if str(x).strip()]
+        item: dict[str, Any] = {"title": title, "points": points[:5]}
+        if page.get("part"):
+            item["part"] = str(page.get("part"))
+        body.append(item)
+
+    desired_body = max(0, target - 2)
+
+    seed = random.Random(len(body) * 9973 + target)
+    while len(body) < desired_body:
+        idx = len(body) + 1
+        if body:
+            ref = body[min(len(body) - 1, seed.randrange(len(body)))]
+            base = str(ref.get("title") or f"专题分析{idx}")
             points = [str(x) for x in list(ref.get("points") or [])][:2]
         else:
-            title = f"专题分析{idx}"
+            base = f"专题分析{idx}"
             points = []
 
         points.extend(["关键结论", "行动建议"])
-        normalized.append(
-            {
-                "title": f"{title}扩展",
-                "points": points[:3],
-            }
-        )
+        title = f"{base}扩展" if not base.endswith("扩展") else base
+        body.append({"title": title, "points": points[:3]})
 
-    return normalized
+    body = body[:desired_body]
+
+    # Canonical outline skeleton required by UI and rendering flow.
+    out: list[dict[str, Any]] = [
+        {"title": "封面", "points": []},
+        {"title": "目录", "points": []},
+    ]
+    out.extend(body)
+
+    # Safety fill if body filtering produced fewer pages than expected.
+    while len(out) < target:
+        i = len(out) + 1
+        out.append({"title": f"第{i}页", "points": ["关键结论", "主要依据", "下一步行动"]})
+
+    return out
 
 
 

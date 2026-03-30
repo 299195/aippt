@@ -65,9 +65,14 @@ class ModelClient:
     base_url: str = settings.model_base_url
     api_key: str = settings.model_api_key
     model: str = settings.model_name
+    endpoint_id: str = settings.model_endpoint_id
+
+    def _target_model(self) -> str:
+        # Volcengine Ark endpoint mode uses endpoint_id as the OpenAI-compatible model field.
+        return str(self.endpoint_id or self.model or "").strip()
 
     def enabled(self) -> bool:
-        return bool(self.base_url and self.api_key and self.model)
+        return bool(self.base_url and self.api_key and self._target_model())
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.enabled():
@@ -167,7 +172,7 @@ class ModelClient:
         response_format: dict[str, Any] | None = None,
     ) -> str:
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": self._target_model(),
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -194,7 +199,7 @@ class ModelClient:
 
         url = self.base_url.rstrip("/") + settings.model_chat_path
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": self._target_model(),
             "temperature": temperature,
             "stream": True,
             "messages": [
@@ -263,7 +268,7 @@ class ModelClient:
         image_url = self._image_to_data_url(image_path)
 
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": self._target_model(),
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},

@@ -15,8 +15,20 @@
 cd backend
 conda activate aippt
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8001
 ```
+
+## 与 SmartSchoolAI 新后端同款导出引擎
+
+默认导出引擎已切换为 `Ai-To-PPTX`（与 `third_party/ai-to-pptx-backend` 同款）。
+
+要求：
+- 安装 `PHP >= 7.4`，并启用 `zip` 扩展
+- 如 `php` 不在 PATH，可设置 `AIPPT_PHP_BIN` 指向 `php.exe`
+
+可选环境变量：
+- `AIPPT_EXPORT_ENGINE=ai_to_pptx|auto|legacy`（默认 `ai_to_pptx`）
+- `AIPPT_PHP_BIN=C:\path\to\php.exe`
 
 ## 独立模型配置（可随时换模型）
 

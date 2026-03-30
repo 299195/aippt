@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,3 +24,4 @@ class JobResult:
     slides: list[Slide]
     pptx_path: str
     created_at: datetime
+

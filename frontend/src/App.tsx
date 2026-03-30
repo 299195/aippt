@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   createJob,
@@ -65,7 +65,7 @@ function App() {
   const [materialText, setMaterialText] = useState("");
   const [outlineText, setOutlineText] = useState("");
   const [style, setStyle] = useState<StyleType>("management");
-  const [templateId, setTemplateId] = useState<string>("executive_clean");
+  const [templateId, setTemplateId] = useState<string>("no_template");
   const [pages, setPages] = useState(8);
 
   const [loading, setLoading] = useState(false);
@@ -235,7 +235,7 @@ function App() {
       setJob(detail);
       setTitle(detail.title);
       setOutlineText(formatOutlineText(detail.outline));
-      setTemplateId(detail.template_id);
+      setTemplateId(templates.some((tpl) => tpl.id === detail.template_id) ? detail.template_id : "no_template");
       setStyle(detail.style);
       if (detail.slides.length) {
         setPages(detail.slides.length);
@@ -306,26 +306,24 @@ function App() {
               </label>
 
               <div className="style-switch" role="group" aria-label="风格选择">
-                <button
-                  type="button"
-                  className={style === "management" ? "switch-seg active" : "switch-seg"}
-                  onClick={() => {
-                    setStyle("management");
-                    setOutlineText("");
-                  }}
-                >
-                  管理版
-                </button>
-                <button
-                  type="button"
-                  className={style === "technical" ? "switch-seg active" : "switch-seg"}
-                  onClick={() => {
-                    setStyle("technical");
-                    setOutlineText("");
-                  }}
-                >
-                  技术版
-                </button>
+                {(
+                  [
+                    ["management", "管理版"],
+                    ["technical", "技术版"],
+                  ] as Array<[StyleType, string]>
+                ).map(([styleKey, label]) => (
+                  <button
+                    key={styleKey}
+                    type="button"
+                    className={style === styleKey ? "switch-seg active" : "switch-seg"}
+                    onClick={() => {
+                      setStyle(styleKey);
+                      setOutlineText("");
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
 
               <div className="page-stepper-wrap">
@@ -483,6 +481,8 @@ function App() {
 }
 
 export default App;
+
+
 
 
 

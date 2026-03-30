@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from datetime import datetime
@@ -33,14 +33,14 @@ from app.schemas import (
     UploadParseResponse,
 )
 from app.services.parser import parse_text_input, read_uploaded_file
-from app.services.project_workflow import (
+from app.services.project_workflow import rewrite_project
+from app.services.new_backend_workflow import (
     clean_outline_items,
     generate_descriptions_task,
     generate_ppt_task,
     get_outline_for_project,
     llm,
     rebuild_project_pages,
-    rewrite_project,
     utc_now_iso,
 )
 from app.services.task_manager import task_manager
@@ -78,6 +78,10 @@ def _as_dt(raw: str | None) -> datetime:
         return datetime.utcnow()
 
 
+
+def _normalize_style(style: str | None) -> str:
+    return "technical" if str(style or "").lower() == "technical" else "management"
+
 def _row_to_page_dto(row: Any) -> PageDTO:
     outline_content = _parse_json(row["outline_content"], {})
     description_content = _parse_json(row["description_content"], None)
@@ -108,7 +112,7 @@ def _get_project_detail_or_404(project_id: str) -> ProjectDetailDTO:
         idea_prompt=str(project["idea_prompt"] or ""),
         outline_text=str(project["outline_text"] or ""),
         material_text=str(project["material_text"] or ""),
-        style=str(project["style"]),
+        style=_normalize_style(str(project["style"])),
         template_id=str(project["template_id"]),
         target_pages=int(project["target_pages"]),
         status=str(project["status"]),
@@ -166,7 +170,7 @@ def _create_project_row(req: ProjectCreateRequest) -> str:
             "idea_prompt": req.title,
             "outline_text": req.outline_text,
             "material_text": req.material_text,
-            "style": req.style,
+            "style": _normalize_style(req.style),
             "template_id": req.template_id,
             "target_pages": req.target_pages,
             "status": "DRAFT",
@@ -198,11 +202,14 @@ def _create_task(project_id: str, task_type: str, total: int = 0) -> str:
 
 @router.get("/model/config", response_model=ModelConfigResponse)
 def model_config() -> ModelConfigResponse:
+    endpoint_id = str(getattr(settings, "model_endpoint_id", "") or "").strip()
+    model = endpoint_id or settings.model_name
     return ModelConfigResponse(
         provider=settings.model_provider,
-        model=settings.model_name,
+        model=model,
+        endpoint_id=endpoint_id or None,
         use_mock=settings.use_mock_llm,
-        configured=bool(settings.model_base_url and settings.model_api_key and settings.model_name),
+        configured=bool(settings.model_base_url and settings.model_api_key and model),
         base_url=settings.model_base_url,
     )
 
@@ -232,7 +239,7 @@ async def parse_upload(file: UploadFile = File(...)) -> UploadParseResponse:
 @router.post("/outline/preview", response_model=OutlinePreviewResponse)
 def preview_outline(req: OutlinePreviewRequest) -> OutlinePreviewResponse:
     material = parse_text_input(req.title, req.outline_text, req.material_text)
-    outline = llm.generate_outline(req.title, req.style, material, req.target_pages)
+    outline = llm.generate_outline(req.title, _normalize_style(req.style), material, req.target_pages)
     return OutlinePreviewResponse(outline=outline)
 
 
@@ -249,7 +256,7 @@ def project_history() -> List[ProjectListItemDTO]:
         ProjectListItemDTO(
             project_id=str(r["project_id"]),
             title=str(r["title"]),
-            style=str(r["style"]),
+            style=_normalize_style(str(r["style"])),
             template_id=str(r["template_id"]),
             status=str(r["status"]),
             created_at=_as_dt(r["created_at"]),
@@ -421,7 +428,7 @@ def history() -> List[HistoryItem]:
         HistoryItem(
             job_id=str(r["project_id"]),
             title=str(r["title"]),
-            style=str(r["style"]),
+            style=_normalize_style(str(r["style"])),
             template_id=str(r["template_id"]),
             status=str(r["status"]),
             created_at=_as_dt(r["created_at"]),

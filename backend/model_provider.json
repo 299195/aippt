@@ -1,9 +1,10 @@
-{
+﻿{
   "provider": "doubao",
   "use_mock": false,
   "base_url": "https://ark.cn-beijing.volces.com/api",
-  "api_key": "",
-  "model": "doubao-seed-2-0-lite-260215",
+  "api_key": "e2e7484e-f449-4c0e-95ff-a2a5dbf05e6f",
+  "endpoint_id": "ep-20260326100912-jrgtw",
+  "model": "doubao-seed-2-0-mini-260215",
   "chat_path": "/v3/chat/completions",
   "timeout": 60
 }

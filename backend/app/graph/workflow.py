@@ -169,8 +169,8 @@ def style_adapt_node(state: PPTState) -> PPTState:
 
 def export_node(state: PPTState) -> PPTState:
     job_id = state.get("job_id") or str(uuid4())
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{job_id}_{ts}.pptx"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"{job_id}_{ts}_{uuid4().hex[:8]}.pptx"
     out_path = settings.export_dir / filename
     exported = export_slides_to_pptx(
         state.get("slides", []),

@@ -1503,9 +1503,9 @@ def generate_ppt_task(task_id: str, project_id: str) -> None:
 
 
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
-        filename = f"{project_id}_{ts}.pptx"
+        filename = f"{project_id}_{ts}_{uuid4().hex[:8]}.pptx"
 
         out_path = settings.export_dir / filename
 
@@ -1802,9 +1802,9 @@ def rewrite_project(project_id: str, action: str) -> str:
 
 
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
-    filename = f"{project_id}_{ts}.pptx"
+    filename = f"{project_id}_{ts}_{uuid4().hex[:8]}.pptx"
 
     out_path = settings.export_dir / filename
 

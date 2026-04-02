@@ -1,9 +1,13 @@
 ﻿from __future__ import annotations
 
 import base64
+import http.client
 import json
 import mimetypes
+import shutil
+import socket
 import ssl
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,6 +94,14 @@ class ModelClient:
             try:
                 with urlopen(req, timeout=settings.request_timeout_sec, context=ssl_context) as resp:
                     return json.loads(resp.read().decode("utf-8"))
+            except (TimeoutError, socket.timeout) as exc:
+                last_error = exc
+                if attempt < 3:
+                    time.sleep(0.6 * attempt)
+                    continue
+                raise RuntimeError(
+                    f"{self.provider} request timeout after {settings.request_timeout_sec}s: {exc}"
+                ) from exc
             except HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="ignore")
                 transient = exc.code in {408, 409, 425, 429} or exc.code >= 500
@@ -103,6 +115,15 @@ class ModelClient:
                     time.sleep(0.6 * attempt)
                     continue
                 raise RuntimeError(f"{self.provider} URLError: {exc}") from exc
+            except (http.client.RemoteDisconnected, ConnectionResetError) as exc:
+                last_error = exc
+                if attempt < 3:
+                    time.sleep(0.6 * attempt)
+                    continue
+                raise RuntimeError(
+                    f"{self.provider} connection closed by remote host: {exc}. "
+                    f"target={url}"
+                ) from exc
 
         raise RuntimeError(f"{self.provider} request failed: {last_error}")
 
@@ -188,6 +209,163 @@ class ModelClient:
             raise RuntimeError(f"{self.provider} returned empty content")
         return content
 
+    def _chat_stream_payload(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+    ) -> dict[str, Any]:
+        return {
+            "model": self._target_model(),
+            "temperature": temperature,
+            "stream": True,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+
+    def _chat_text_stream_with_curl(
+        self,
+        *,
+        url: str,
+        payload: dict[str, Any],
+        stream_timeout: int,
+    ) -> Iterator[str]:
+        curl_bin = shutil.which("curl") or shutil.which("curl.exe")
+        if not curl_bin:
+            raise RuntimeError("curl executable not found")
+
+        body = json.dumps(payload, ensure_ascii=False)
+        cmd = [
+            curl_bin,
+            "-sS",
+            "-N",
+            "--connect-timeout",
+            str(max(5, min(stream_timeout, 30))),
+            "--max-time",
+            str(max(15, stream_timeout)),
+            "-X",
+            "POST",
+            url,
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            f"Authorization: Bearer {self.api_key}",
+            "--data-binary",
+            body,
+        ]
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                bufsize=1,
+            )
+        except Exception as exc:  # noqa: PERF203
+            raise RuntimeError(f"{self.provider} failed to start curl: {exc}") from exc
+
+        lines: list[str] = []
+        saw_sse = False
+        try:
+            assert proc.stdout is not None
+            for raw_line in proc.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                lines.append(line)
+
+                if not line.startswith("data:"):
+                    continue
+
+                saw_sse = True
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data)
+                except Exception:
+                    continue
+
+                chunk = self._extract_delta_text(event)
+                if chunk:
+                    yield chunk
+        finally:
+            stderr_text = ""
+            if proc.stderr is not None:
+                try:
+                    stderr_text = proc.stderr.read().strip()
+                except Exception:
+                    stderr_text = ""
+            return_code = proc.wait()
+            if return_code != 0:
+                detail = stderr_text or f"curl exit code {return_code}"
+                raise RuntimeError(f"{self.provider} curl stream failed: {detail}")
+
+        # Some providers may ignore stream=true and return a normal JSON body.
+        if not saw_sse and lines:
+            joined = "\n".join(lines)
+            try:
+                data = json.loads(joined)
+                text = self._extract_content(data)
+                if text:
+                    yield text
+            except Exception:
+                pass
+
+    def _chat_text_stream_with_urllib(
+        self,
+        *,
+        url: str,
+        payload: dict[str, Any],
+        stream_timeout: int,
+    ) -> Iterator[str]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = Request(url=url, data=body, method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.api_key}")
+
+        ssl_context = ssl.create_default_context()
+        with urlopen(req, timeout=stream_timeout, context=ssl_context) as resp:
+            lines: list[str] = []
+            saw_sse = False
+
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="ignore").strip()
+                if not line:
+                    continue
+                lines.append(line)
+
+                if line.startswith("data:"):
+                    saw_sse = True
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data)
+                    except Exception:
+                        continue
+
+                    chunk = self._extract_delta_text(event)
+                    if chunk:
+                        yield chunk
+                    continue
+
+            # Some providers may ignore stream=true and return a normal JSON body.
+            if not saw_sse and lines:
+                joined = "\n".join(lines)
+                try:
+                    data = json.loads(joined)
+                    text = self._extract_content(data)
+                    if text:
+                        yield text
+                except Exception:
+                    pass
+
     def chat_text_stream(
         self,
         system_prompt: str,
@@ -198,65 +376,54 @@ class ModelClient:
             raise RuntimeError(f"{self.provider} model config incomplete")
 
         url = self.base_url.rstrip("/") + settings.model_chat_path
-        payload: dict[str, Any] = {
-            "model": self._target_model(),
-            "temperature": temperature,
-            "stream": True,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = Request(url=url, data=body, method="POST")
-        req.add_header("Content-Type", "application/json")
-        req.add_header("Authorization", f"Bearer {self.api_key}")
-
-        ssl_context = ssl.create_default_context()
+        payload = self._chat_stream_payload(system_prompt, user_prompt, temperature)
+        stream_timeout = max(int(settings.stream_timeout_sec), int(settings.request_timeout_sec))
 
         try:
-            with urlopen(req, timeout=settings.request_timeout_sec, context=ssl_context) as resp:
-                lines: list[str] = []
-                saw_sse = False
-
-                for raw_line in resp:
-                    line = raw_line.decode("utf-8", errors="ignore").strip()
-                    if not line:
-                        continue
-                    lines.append(line)
-
-                    if line.startswith("data:"):
-                        saw_sse = True
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            event = json.loads(data)
-                        except Exception:
-                            continue
-
-                        chunk = self._extract_delta_text(event)
-                        if chunk:
-                            yield chunk
-                        continue
-
-                # Some providers may ignore stream=true and return a normal JSON body.
-                if not saw_sse and lines:
-                    joined = "\n".join(lines)
-                    try:
-                        data = json.loads(joined)
-                        text = self._extract_content(data)
-                        if text:
-                            yield text
-                    except Exception:
-                        pass
-
+            # third-party-compatible path: prefer curl streaming, fallback to urllib.
+            yield from self._chat_text_stream_with_curl(
+                url=url,
+                payload=payload,
+                stream_timeout=stream_timeout,
+            )
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="ignore")
             raise RuntimeError(f"{self.provider} HTTPError: {exc.code} {detail}") from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise RuntimeError(
+                f"{self.provider} stream timeout after {stream_timeout}s: {exc}. "
+                "Increase MODEL_STREAM_TIMEOUT if needed."
+            ) from exc
         except URLError as exc:
             raise RuntimeError(f"{self.provider} URLError: {exc}") from exc
+        except (http.client.RemoteDisconnected, ConnectionResetError) as exc:
+            raise RuntimeError(
+                f"{self.provider} stream closed by remote host: {exc}. "
+                f"target={url}"
+            ) from exc
+        except Exception:
+            # Curl path may be unavailable on some environments.
+            try:
+                yield from self._chat_text_stream_with_urllib(
+                    url=url,
+                    payload=payload,
+                    stream_timeout=stream_timeout,
+                )
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")
+                raise RuntimeError(f"{self.provider} HTTPError: {exc.code} {detail}") from exc
+            except (TimeoutError, socket.timeout) as exc:
+                raise RuntimeError(
+                    f"{self.provider} stream timeout after {stream_timeout}s: {exc}. "
+                    "Increase MODEL_STREAM_TIMEOUT if needed."
+                ) from exc
+            except URLError as exc:
+                raise RuntimeError(f"{self.provider} URLError: {exc}") from exc
+            except (http.client.RemoteDisconnected, ConnectionResetError) as exc:
+                raise RuntimeError(
+                    f"{self.provider} stream closed by remote host: {exc}. "
+                    f"target={url}"
+                ) from exc
 
     def chat_with_image_text(
         self,

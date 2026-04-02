@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 
 StyleType = Literal["management", "technical"]
-RewriteAction = Literal["concise", "management", "technical"]
 TemplateId = str
 CreationType = Literal["idea", "outline"]
 
@@ -29,7 +28,7 @@ class JobDetailResponse(BaseModel):
     job_id: str
     status: str
     style: StyleType
-    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
+    template_id: TemplateId = Field(default="a2p_2", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
     title: str
     outline: List[str]
     slides: List[SlideDTO]
@@ -41,7 +40,7 @@ class HistoryItem(BaseModel):
     job_id: str
     title: str
     style: StyleType
-    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
+    template_id: TemplateId = Field(default="a2p_2", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
     status: str
     created_at: datetime
 
@@ -61,12 +60,7 @@ class GenerateRequest(BaseModel):
     outline_text: str = Field(default="")
     outline: Optional[List[str]] = None
     style: StyleType = "management"
-    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
-    target_pages: int = Field(default=8, ge=8, le=12)
-
-
-class RewriteRequest(BaseModel):
-    action: RewriteAction
+    template_id: TemplateId = Field(default="a2p_2", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
 
 
 class UploadParseResponse(BaseModel):
@@ -78,7 +72,6 @@ class OutlinePreviewRequest(BaseModel):
     material_text: str = Field(default="")
     outline_text: str = Field(default="")
     style: StyleType = "management"
-    target_pages: int = Field(default=8, ge=8, le=12)
 
 
 class OutlinePreviewResponse(BaseModel):
@@ -102,8 +95,7 @@ class ProjectCreateRequest(BaseModel):
     material_text: str = Field(default="")
     outline_text: str = Field(default="")
     style: StyleType = "management"
-    template_id: TemplateId = Field(default="no_template", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
-    target_pages: int = Field(default=8, ge=8, le=12)
+    template_id: TemplateId = Field(default="a2p_2", pattern=r"^[a-z0-9_\\-]+$", min_length=2, max_length=80)
     creation_type: CreationType = "idea"
 
 
@@ -173,7 +165,6 @@ class ProjectDetailDTO(BaseModel):
     material_text: str
     style: StyleType
     template_id: TemplateId
-    target_pages: int
     status: str
     pptx_url: Optional[str] = None
     pages: List[PageDTO]

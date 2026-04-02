@@ -42,6 +42,8 @@ def _env_int(name: str, default: int) -> int:
 
 MODEL_CONFIG_PATH = Path(__file__).resolve().parents[1] / "model_provider.json"
 MODEL_CONFIG = _load_model_config(MODEL_CONFIG_PATH)
+_MODEL_TIMEOUT_DEFAULT = int(MODEL_CONFIG.get("timeout", 60) or 60)
+_MODEL_STREAM_TIMEOUT_DEFAULT = int(MODEL_CONFIG.get("stream_timeout", max(_MODEL_TIMEOUT_DEFAULT, 300)) or max(_MODEL_TIMEOUT_DEFAULT, 300))
 
 
 class Settings(BaseModel):
@@ -64,7 +66,8 @@ class Settings(BaseModel):
         _env_or_default("MODEL_ENDPOINT_ID", MODEL_CONFIG.get("model", MODEL_CONFIG.get("endpoint_id", ""))),
     )
     model_chat_path: str = _env_or_default("MODEL_CHAT_PATH", MODEL_CONFIG.get("chat_path", "/v1/chat/completions"))
-    request_timeout_sec: int = _env_int("MODEL_TIMEOUT", int(MODEL_CONFIG.get("timeout", 60)))
+    request_timeout_sec: int = _env_int("MODEL_TIMEOUT", _MODEL_TIMEOUT_DEFAULT)
+    stream_timeout_sec: int = _env_int("MODEL_STREAM_TIMEOUT", _MODEL_STREAM_TIMEOUT_DEFAULT)
 
     enable_image_generation: bool = _env_bool(
         "ENABLE_IMAGE_GENERATION",

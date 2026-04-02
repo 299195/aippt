@@ -1,5 +1,4 @@
-export type StyleType = "management" | "technical";
-export type RewriteAction = "concise" | "management" | "technical";
+﻿export type StyleType = "management" | "technical";
 export type TemplateId = string;
 
 export interface TemplateItem {
@@ -29,6 +28,7 @@ export interface JobDetail {
   template_id: TemplateId;
   title: string;
   outline: string[];
+  outline_text?: string;
   slides: Slide[];
   pptx_url: string | null;
   created_at: string;
@@ -50,4 +50,7 @@ export interface ModelConfig {
   configured: boolean;
   base_url: string;
 }
+
+
+
 

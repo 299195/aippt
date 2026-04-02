@@ -26,7 +26,6 @@ from app.schemas import (
     ProjectDetailDTO,
     ProjectListItemDTO,
     ProjectOutlineGenerateRequest,
-    RewriteRequest,
     SlideDTO,
     TaskDTO,
     TaskProgressDTO,
@@ -46,7 +45,6 @@ from app.services.new_backend_workflow import (
     utc_now_iso,
 )
 from app.services.parser import parse_text_input, read_uploaded_file
-from app.services.project_workflow import rewrite_project
 from app.services.task_manager import task_manager
 from app.services.template_catalog import list_templates, template_exists
 from app.storage.db import (
@@ -118,7 +116,6 @@ def _get_project_detail_or_404(project_id: str) -> ProjectDetailDTO:
         material_text=str(project["material_text"] or ""),
         style=_normalize_style(str(project["style"])),
         template_id=str(project["template_id"]),
-        target_pages=int(project["target_pages"]),
         status=str(project["status"]),
         pptx_url=project["pptx_url"],
         pages=pages,
@@ -176,7 +173,7 @@ def _create_project_row(req: ProjectCreateRequest) -> str:
             "material_text": req.material_text,
             "style": _normalize_style(req.style),
             "template_id": req.template_id,
-            "target_pages": req.target_pages,
+            "target_pages": 0,
             "status": "DRAFT",
             "pptx_url": None,
             "created_at": now,
@@ -242,7 +239,7 @@ async def parse_upload(file: UploadFile = File(...)) -> UploadParseResponse:
 @router.post("/outline/preview", response_model=OutlinePreviewResponse)
 def preview_outline(req: OutlinePreviewRequest) -> OutlinePreviewResponse:
     material = parse_text_input(req.title, req.outline_text, req.material_text)
-    bundle = llm.generate_outline_bundle(req.title, _normalize_style(req.style), material, req.target_pages)
+    bundle = llm.generate_outline_bundle(req.title, _normalize_style(req.style), material)
     return OutlinePreviewResponse(
         outline=[str(x) for x in list(bundle.get("outline_titles") or [])],
         outline_markdown=str(bundle.get("outline_markdown") or ""),
@@ -259,7 +256,6 @@ def preview_outline_stream(req: OutlinePreviewRequest) -> StreamingResponse:
                 title=req.title,
                 style=_normalize_style(req.style),
                 material_text=material,
-                target_pages=req.target_pages,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
@@ -416,19 +412,6 @@ def global_task_detail(task_id: str) -> TaskDTO:
         completed_at=_as_dt(row["completed_at"]) if row["completed_at"] else None,
     )
 
-@router.post("/projects/{project_id}/rewrite", response_model=GenerateResponse)
-def rewrite_project_slides(project_id: str, req: RewriteRequest) -> GenerateResponse:
-    project = get_project(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="project not found")
-
-    rewrite_project(project_id, req.action)
-    return GenerateResponse(job_id=project_id)
-
-
-# Compatibility endpoints
-
-
 @router.post("/jobs", response_model=GenerateResponse)
 def create_job(req: GenerateRequest) -> GenerateResponse:
     project_id = _create_project_row(
@@ -438,7 +421,6 @@ def create_job(req: GenerateRequest) -> GenerateResponse:
             outline_text=req.outline_text,
             style=req.style,
             template_id=req.template_id,
-            target_pages=req.target_pages,
             creation_type="idea",
         )
     )
@@ -490,11 +472,3 @@ def history() -> List[HistoryItem]:
         for r in rows
     ]
 
-
-@router.post("/jobs/{job_id}/rewrite", response_model=GenerateResponse)
-def rewrite(job_id: str, req: RewriteRequest) -> GenerateResponse:
-    project = get_project(job_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="job not found")
-    rewrite_project(job_id, req.action)
-    return GenerateResponse(job_id=job_id)

@@ -1,5 +1,27 @@
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8001/api";
-const FILE_BASE = import.meta.env.VITE_FILE_BASE ?? "http://127.0.0.1:8001";
+const DEFAULT_API_BASE = "http://127.0.0.1:8001/api";
+const DEFAULT_FILE_BASE = "http://127.0.0.1:8001";
+function normalizeBase(rawValue, fallbackBase, fallbackPath = "") {
+    if (!rawValue) {
+        return fallbackBase;
+    }
+    const raw = String(rawValue).trim();
+    try {
+        const parsed = new URL(raw);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            throw new Error("Unsupported protocol");
+        }
+        return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+    }
+    catch {
+        const prefix = raw.match(/^(https?:\/\/[A-Za-z0-9.-]+:\d{2,5})/i);
+        if (prefix) {
+            return `${prefix[1]}${fallbackPath}`;
+        }
+        return fallbackBase;
+    }
+}
+const API_BASE = normalizeBase(import.meta.env.VITE_API_BASE, DEFAULT_API_BASE, "/api");
+const FILE_BASE = normalizeBase(import.meta.env.VITE_FILE_BASE, DEFAULT_FILE_BASE, "");
 export const fileUrl = (url) => (url ? `${FILE_BASE}${url}` : "");
 async function readError(res, fallback) {
     try {

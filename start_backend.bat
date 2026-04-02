@@ -7,6 +7,8 @@ cd /d "%ROOT_DIR%backend" || goto :cd_error
 set "BACKEND_PORT=%~1"
 if "%BACKEND_PORT%"=="" set "BACKEND_PORT=8001"
 
+> "%ROOT_DIR%.backend_port" echo %BACKEND_PORT%
+
 if exist ".venv311\Scripts\python.exe" (
   set "PYTHON_EXE=.venv311\Scripts\python.exe"
 ) else if exist ".venv\Scripts\python.exe" (

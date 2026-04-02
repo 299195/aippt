@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Dict, List, Tuple
@@ -12,6 +13,7 @@ from typing import Dict, List, Tuple
 from app.services.template_catalog import resolve_template_assets
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _PPTX_GENERATOR_DIR = Path(__file__).resolve().parents[2] / "pptx_generator"
 _PPTX_GENERATOR_SCRIPT = _PPTX_GENERATOR_DIR / "generate_deck.js"
 
@@ -38,9 +40,41 @@ _AIPPTX_TEMPLATE_NAMES: dict[str, str] = {
 _AIPPTX_DEFAULT_TEMPLATE = "\u84dd\u8272\u901a\u7528\u5546\u52a1"
 
 
+def _resolve_output_path(out_path: Path) -> Path:
+    if out_path.is_absolute():
+        return out_path
+    return (_BACKEND_ROOT / out_path).resolve()
+
+
+def _wait_for_file(path: Path, timeout_sec: float = 5.0, interval_sec: float = 0.2) -> bool:
+    deadline = time.time() + max(timeout_sec, 0.0)
+    while time.time() <= deadline:
+        if path.exists() and path.is_file():
+            return True
+        time.sleep(max(interval_sec, 0.05))
+    return path.exists() and path.is_file()
+
+
+def _recover_output_from_stdout(stdout: str, target_path: Path) -> bool:
+    lines = [line.strip().strip("\"'") for line in str(stdout or "").splitlines() if line.strip()]
+    for raw in reversed(lines):
+        if not raw.lower().endswith(".pptx"):
+            continue
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = (_AIPPTX_DIR / candidate).resolve()
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        if candidate.resolve() != target_path.resolve():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate, target_path)
+        return target_path.exists() and target_path.is_file()
+    return False
+
+
 def _is_toc_like_title(title: str) -> bool:
     low = str(title or "").lower()
-    return any(k in low for k in ("鐩綍", "璁▼", "agenda", "contents", "table of contents", "toc"))
+    return any(k in low for k in ("\u76ee\u5f55", "\u8bae\u7a0b", "agenda", "contents", "table of contents", "toc"))
 
 
 def _content_slides(slides: List[Dict]) -> List[Dict]:
@@ -51,7 +85,7 @@ def _content_slides(slides: List[Dict]) -> List[Dict]:
         if slide_type in {"title", "toc"}:
             continue
         low = title.lower()
-        if any(k in low for k in ("cover", "灏侀潰", "agenda")) or _is_toc_like_title(title):
+        if any(k in low for k in ("cover", "\u5c01\u9762", "agenda")) or _is_toc_like_title(title):
             continue
         out.append(item)
     return out
@@ -77,7 +111,7 @@ def _default_topic(topic: str, body_slides: List[Dict]) -> str:
         first = _normalize_md_text(str(body_slides[0].get("title") or ""), max_len=64)
         if first:
             return first
-    return "椤圭洰姹囨姤"
+    return "\u9879\u76ee\u6c47\u62a5"
 
 
 def _default_toc_items(body_slides: List[Dict], outline: List[str] | None) -> List[str]:
@@ -109,7 +143,7 @@ def _dedupe_keep_order(values: List[str], limit: int) -> List[str]:
 
 
 def _split_sentences(text: str, max_len: int = 120) -> List[str]:
-    chunks = re.split(r"[銆傦紒锛??锛?]\s*|\n+", str(text or ""))
+    chunks = re.split(r"[\u3002\uFF1B;!\uFF01\?\uFF1F]\s*|\n+", str(text or ""))
     parts: List[str] = []
     for raw in chunks:
         val = _normalize_md_text(raw, max_len=max_len)
@@ -219,7 +253,7 @@ def _build_chapter_groups(
 
     chapter_titles = _preferred_chapter_titles(body_slides, outline, toc_items)
     if not chapter_titles:
-        chapter_titles = [_normalize_md_text(str(body_slides[0].get("title") or ""), max_len=48) or "鏍稿績绔犺妭"]
+        chapter_titles = [_normalize_md_text(str(body_slides[0].get("title") or ""), max_len=48) or "核心章节"]
 
     chapter_count = max(1, min(len(chapter_titles), len(body_slides)))
     chapter_titles = chapter_titles[:chapter_count]
@@ -251,7 +285,7 @@ def _build_outline_markdown(
     for chapter_idx, (chapter_title, chapter_slides) in enumerate(chapters, start=1):
         lines.append(f"## {chapter_idx}. {chapter_title}")
         for section_idx, slide in enumerate(chapter_slides, start=1):
-            section_title = _normalize_md_text(str(slide.get("title") or ""), max_len=48) or f"灏忚妭{chapter_idx}-{section_idx}"
+            section_title = _normalize_md_text(str(slide.get("title") or ""), max_len=48) or f"\u5c0f\u8282{chapter_idx}-{section_idx}"
             lines.append(f"### {chapter_idx}.{section_idx} {section_title}")
             for point_idx, (point_title, _) in enumerate(_section_pairs(slide), start=1):
                 lines.append(f"{chapter_idx}.{section_idx}.{point_idx} {point_title}")
@@ -269,7 +303,7 @@ def _build_content_markdown(
     for chapter_idx, (chapter_title, chapter_slides) in enumerate(chapters, start=1):
         lines.append(f"## {chapter_idx}. {chapter_title}")
         for section_idx, slide in enumerate(chapter_slides, start=1):
-            section_title = _normalize_md_text(str(slide.get("title") or ""), max_len=48) or f"灏忚妭{chapter_idx}-{section_idx}"
+            section_title = _normalize_md_text(str(slide.get("title") or ""), max_len=48) or f"\u5c0f\u8282{chapter_idx}-{section_idx}"
             lines.append(f"### {chapter_idx}.{section_idx} {section_title}")
             for point_idx, (point_title, point_detail) in enumerate(_section_pairs(slide), start=1):
                 lines.append(f"{chapter_idx}.{section_idx}.{point_idx} {point_title}")
@@ -394,22 +428,21 @@ def _export_with_ai_to_pptx(
 
     outline_md = str(outline_markdown or "").strip()
     content_md = str(content_markdown or "").strip()
-    body_slides = _content_slides(slides)
-    if not body_slides:
-        body_slides = [x for x in slides if _normalize_md_text(str(x.get("title") or ""), max_len=80)]
-
     if not outline_md or not content_md:
-        if not body_slides:
-            raise RuntimeError("no slide content available for Ai-To-PPTX export")
-        topic_text = _default_topic(topic, body_slides)
-        outline_md = _build_outline_markdown(topic_text, body_slides, outline, toc_items)
-        content_md = _build_content_markdown(topic_text, body_slides, outline, toc_items)
+        raise RuntimeError(
+            "third-party markdown missing: outline_markdown/content_markdown are required "
+            "for strict Ai-To-PPTX flow"
+        )
     template_path = _resolve_ai_to_pptx_template_json(template_id)
     author_text = _normalize_md_text(subtitle or "", max_len=32)
-    last_page_text = _normalize_md_text(os.getenv("AIPPTX_LAST_PAGE_TEXT", "鎰熻阿鑱嗗惉"), max_len=32) or "鎰熻阿鑱嗗惉"
+    last_page_text = _normalize_md_text(
+        os.getenv("AIPPTX_LAST_PAGE_TEXT", "\u975e\u5e38\u611f\u8c22\u5927\u5bb6\u8046\u542c"),
+        max_len=32,
+    ) or "\u975e\u5e38\u611f\u8c22\u5927\u5bb6\u8046\u542c"
 
-    target_path = out_path if out_path.is_absolute() else (Path.cwd() / out_path)
+    target_path = _resolve_output_path(out_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.unlink(missing_ok=True)
 
     with NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as outline_tmp:
         outline_tmp.write(outline_md)
@@ -429,29 +462,50 @@ def _export_with_ai_to_pptx(
             author_text,
             last_page_text,
         ]
-        completed = subprocess.run(
-            cmd,
-            cwd=str(_AIPPTX_DIR),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            check=False,
-        )
+        last_missing_detail = "no stderr/stdout"
+        for attempt in range(1, 3):
+            completed = subprocess.run(
+                cmd,
+                cwd=str(_AIPPTX_DIR),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                check=False,
+            )
+
+            stderr = (completed.stderr or "").strip()
+            stdout = (completed.stdout or "").strip()
+
+            if completed.returncode != 0:
+                detail = stderr or stdout or f"exit code {completed.returncode}"
+                if "did not produce output" in detail.lower():
+                    detail = f"{detail} (php: {php_bin})"
+                raise RuntimeError(f"Ai-To-PPTX export failed: {detail}")
+
+            if target_path.exists() or _wait_for_file(target_path, timeout_sec=6.0, interval_sec=0.25):
+                return target_path.name
+            if _recover_output_from_stdout(stdout, target_path):
+                return target_path.name
+
+            detail_parts = []
+            if stderr:
+                detail_parts.append(f"stderr={stderr[:300]}")
+            if stdout:
+                detail_parts.append(f"stdout={stdout[:300]}")
+            last_missing_detail = "; ".join(detail_parts) if detail_parts else "no stderr/stdout"
+
+            if attempt < 2:
+                time.sleep(0.5)
+                continue
+
+            raise RuntimeError(
+                "Ai-To-PPTX exporter returned success but output file is missing. "
+                f"target={target_path}; php={php_bin}; {last_missing_detail}"
+            )
     finally:
         outline_path.unlink(missing_ok=True)
         content_path.unlink(missing_ok=True)
-
-    if completed.returncode != 0:
-        stderr = (completed.stderr or "").strip()
-        stdout = (completed.stdout or "").strip()
-        detail = stderr or stdout or f"exit code {completed.returncode}"
-        if "did not produce output" in detail.lower():
-            detail = f"{detail} (php: {php_bin})"
-        raise RuntimeError(f"Ai-To-PPTX export failed: {detail}")
-
-    if not target_path.exists():
-        raise RuntimeError("Ai-To-PPTX exporter did not produce output file")
 
     return target_path.name
 
@@ -501,7 +555,7 @@ def _export_with_node_generator(
         "templatePptxPath": str(template_pptx_path) if template_pptx_path and template_pptx_path.exists() else None,
     }
 
-    target_path = out_path if out_path.is_absolute() else (Path.cwd() / out_path)
+    target_path = _resolve_output_path(out_path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     with NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
@@ -537,7 +591,7 @@ def _export_with_node_generator(
         detail = stderr or stdout or f"exit code {completed.returncode}"
         raise RuntimeError(f"pptx-generator failed: {detail}")
 
-    if not target_path.exists():
+    if not target_path.exists() and not _wait_for_file(target_path, timeout_sec=3.0, interval_sec=0.2):
         raise RuntimeError("pptx-generator did not produce output file")
 
     return target_path.name
@@ -546,7 +600,7 @@ def _export_with_node_generator(
 def export_slides_to_pptx(
     slides: List[Dict],
     out_path: Path,
-    template_id: str = "no_template",
+    template_id: str = "a2p_2",
     topic: str = "",
     outline: List[str] | None = None,
     *,
@@ -582,9 +636,7 @@ def export_slides_to_pptx(
             ai_error = exc
             if engine == "ai_to_pptx":
                 raise RuntimeError(
-                    "Ai-To-PPTX export failed. Install PHP>=7.4 with zip extension "
-                    "and set AIPPT_PHP_BIN if needed. "
-                    f"Original error: {exc}"
+                    f"Ai-To-PPTX export failed. Original error: {exc}"
                 ) from exc
 
     try:

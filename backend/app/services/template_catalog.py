@@ -10,8 +10,12 @@ ASSETS_DIR = Path(__file__).resolve().parents[2] / "assets"
 CUSTOM_TEMPLATE_DIR = ASSETS_DIR / "custom_templates"
 CUSTOM_BG_DIR = CUSTOM_TEMPLATE_DIR / "bgs"
 CUSTOM_PREVIEW_DIR = ASSETS_DIR / "custom_template_previews"
+BUILTIN_COVER_DIR = ASSETS_DIR / "builtin_template_covers"
+
 NO_TEMPLATE_ID = "no_template"
 LEGACY_TEMPLATE_IDS = {"executive_clean"}
+LEGACY_EXPORT_ONLY_IDS = {NO_TEMPLATE_ID}
+
 AIPPTX_BUILTIN_TEMPLATES: List[Dict[str, object]] = [
     {
         "id": "a2p_0",
@@ -55,6 +59,13 @@ AIPPTX_BUILTIN_TEMPLATES: List[Dict[str, object]] = [
     },
 ]
 AIPPTX_BUILTIN_IDS = {str(item["id"]) for item in AIPPTX_BUILTIN_TEMPLATES}
+
+BUILTIN_TEMPLATE_COVER_STEMS: Dict[str, str] = {
+    "a2p_0": "课程学习汇报",
+    "a2p_1": "读书分享演示",
+    "a2p_2": "蓝色通用商务",
+    "a2p_3": "蓝色工作汇报总结",
+}
 
 
 def _slugify(value: str) -> str:
@@ -114,6 +125,17 @@ def _preview_image_url_for(stem: str) -> Optional[str]:
     return None
 
 
+def _builtin_cover_url_for(template_id: str) -> Optional[str]:
+    stem = BUILTIN_TEMPLATE_COVER_STEMS.get(str(template_id))
+    if not stem:
+        return None
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        path = BUILTIN_COVER_DIR / f"{stem}.{ext}"
+        if path.exists():
+            return f"/assets/builtin_template_covers/{path.name}"
+    return None
+
+
 def _custom_template_index() -> Dict[str, Dict[str, object]]:
     CUSTOM_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     CUSTOM_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
@@ -151,28 +173,23 @@ def _custom_template_index() -> Dict[str, Dict[str, object]]:
 
 
 def list_templates() -> List[Dict[str, object]]:
+    BUILTIN_COVER_DIR.mkdir(parents=True, exist_ok=True)
     custom_index = _custom_template_index()
     custom_items = [
         {k: v for k, v in item.items() if k not in {"pptx_path", "bg_path"}}
         for item in custom_index.values()
     ]
-    no_template_item = {
-        "id": NO_TEMPLATE_ID,
-        "name": "No Template (From Scratch)",
-        "subtitle": "Built-in",
-        "summary": "Generate slides without a base PPTX template.",
-        "preview_bg": "#eef4ff",
-        "preview_fg": "#1f3a66",
-        "preview_accent": "#3d78cc",
-        "preview_image_url": None,
-    }
-    builtin_items = [dict(item) for item in AIPPTX_BUILTIN_TEMPLATES]
-    return [*builtin_items, no_template_item, *[dict(item) for item in custom_items]]
+
+    builtin_items: List[Dict[str, object]] = []
+    for item in AIPPTX_BUILTIN_TEMPLATES:
+        data = dict(item)
+        data["preview_image_url"] = data.get("preview_image_url") or _builtin_cover_url_for(str(data.get("id") or ""))
+        builtin_items.append(data)
+
+    return [*builtin_items, *[dict(item) for item in custom_items]]
 
 
 def template_exists(template_id: str) -> bool:
-    if template_id == NO_TEMPLATE_ID:
-        return True
     if template_id in AIPPTX_BUILTIN_IDS:
         return True
     if template_id in LEGACY_TEMPLATE_IDS:
@@ -181,7 +198,7 @@ def template_exists(template_id: str) -> bool:
 
 
 def resolve_template_assets(template_id: str) -> Dict[str, Optional[Path]]:
-    if template_id == NO_TEMPLATE_ID or template_id in LEGACY_TEMPLATE_IDS or template_id in AIPPTX_BUILTIN_IDS:
+    if template_id in AIPPTX_BUILTIN_IDS or template_id in LEGACY_TEMPLATE_IDS or template_id in LEGACY_EXPORT_ONLY_IDS:
         return {"pptx_path": None, "bg_path": None}
     item = _custom_template_index().get(template_id)
     if not item:

@@ -44,6 +44,37 @@ def _normalize_title(text: str) -> str:
     return value.strip(" -:\t\n")
 
 
+def _sanitize_outline_title_text(text: str, fallback: str = "") -> str:
+    title = _normalize_title(text)
+    if not title:
+        return _normalize_title(fallback)
+    # Keep third-party flow but avoid polluting cover title with generic "PPT大纲" prefix.
+    title = re.sub(r"^(PPT\s*大纲|大纲)\s*[:：\-—]*\s*", "", title, flags=re.IGNORECASE).strip()
+    return title or _normalize_title(fallback)
+
+
+def _sanitize_outline_markdown_for_third_party(markdown_text: str, topic_hint: str = "") -> str:
+    raw = str(markdown_text or "")
+    lines = raw.splitlines()
+    if not lines:
+        return raw
+
+    fallback = _normalize_title(topic_hint) or "项目汇报"
+    first_heading_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if line.strip().startswith("# "):
+            first_heading_idx = idx
+            break
+
+    if first_heading_idx is None:
+        return raw
+
+    heading = lines[first_heading_idx].strip()[2:]
+    cleaned = _sanitize_outline_title_text(heading, fallback=fallback)
+    lines[first_heading_idx] = f"# {cleaned or fallback}"
+    return "\n".join(lines)
+
+
 def _is_cover_title(title: str) -> bool:
     low = _normalize_title(title).lower()
     return bool(low) and any(k in low for k in ("封面", "标题", "cover", "title"))
@@ -345,6 +376,136 @@ def _outline_structure_to_markdown(structure: dict[str, Any]) -> str:
 
     return "\n".join(lines)
 
+
+def _is_thank_title(title: str) -> bool:
+    low = _normalize_title(title).lower()
+    return bool(low) and any(k in low for k in ("感谢", "致谢", "结尾", "尾页", "结束", "thank", "thanks", "closing"))
+
+
+def _canonicalize_outline_markdown(raw_markdown: str, topic_hint: str) -> str:
+    fallback_title = _normalize_title(topic_hint) or "项目汇报"
+
+    title = ""
+    title_locked = False
+    lines: list[str] = []
+
+    chapter_no = 0
+    section_no = 0
+    point_no = 0
+    skip_current_chapter = False
+
+    def ensure_chapter(default_title: str = "核心内容") -> None:
+        nonlocal chapter_no, section_no, point_no, skip_current_chapter
+        if chapter_no <= 0:
+            chapter_no = 1
+            section_no = 0
+            point_no = 0
+            skip_current_chapter = False
+            lines.append(f"## {chapter_no}. {default_title}")
+
+    def ensure_section(default_title: str = "核心要点") -> None:
+        nonlocal section_no, point_no
+        if section_no <= 0:
+            section_no = 1
+            point_no = 0
+            lines.append(f"### {chapter_no}.{section_no} {default_title}")
+
+    for raw in str(raw_markdown or "").splitlines():
+        line = str(raw).strip()
+        if not line or line.startswith("```"):
+            continue
+
+        if line.startswith("# "):
+            candidate = _normalize_title(line[2:])
+            if not candidate:
+                continue
+            if _is_thank_title(candidate):
+                continue
+            if not title_locked:
+                title = candidate
+                title_locked = True
+            continue
+
+        if line.startswith("## "):
+            candidate = _normalize_title(re.sub(r"^\d+\.?\s*", "", line[3:]))
+            if (
+                not candidate
+                or _is_cover_title(candidate)
+                or _is_toc_title(candidate)
+                or _is_thank_title(candidate)
+            ):
+                skip_current_chapter = True
+                section_no = 0
+                point_no = 0
+                continue
+            chapter_no += 1
+            section_no = 0
+            point_no = 0
+            skip_current_chapter = False
+            lines.append(f"## {chapter_no}. {candidate}")
+            continue
+
+        if line.startswith("### "):
+            if skip_current_chapter:
+                continue
+            ensure_chapter()
+            candidate = _normalize_title(re.sub(r"^\d+\.\d+\s*", "", line[4:]))
+            if (
+                not candidate
+                or _is_cover_title(candidate)
+                or _is_toc_title(candidate)
+                or _is_thank_title(candidate)
+            ):
+                continue
+            section_no += 1
+            point_no = 0
+            lines.append(f"### {chapter_no}.{section_no} {candidate}")
+            continue
+
+        if skip_current_chapter:
+            continue
+
+        plain_line = line[5:].strip() if line.startswith("#### ") else line
+        m_section = re.match(r"^\d+\.\d+\s+(.+)$", plain_line)
+        if m_section and not re.match(r"^\d+\.\d+\.\d+\s+.+$", plain_line):
+            ensure_chapter()
+            candidate = _normalize_title(m_section.group(1))
+            if candidate and not (_is_cover_title(candidate) or _is_toc_title(candidate) or _is_thank_title(candidate)):
+                section_no += 1
+                point_no = 0
+                lines.append(f"### {chapter_no}.{section_no} {candidate}")
+            continue
+
+        m_point = re.match(r"^\d+\.\d+\.\d+\s+(.+)$", plain_line)
+        if m_point:
+            candidate = _normalize_title(m_point.group(1))
+        elif plain_line.startswith("- ") or plain_line.startswith("* "):
+            candidate = _normalize_title(plain_line[2:])
+        else:
+            candidate = ""
+
+        if not candidate:
+            continue
+
+        ensure_chapter()
+        ensure_section()
+        point_no += 1
+        lines.append(f"{chapter_no}.{section_no}.{point_no} {candidate}")
+
+    if not title:
+        title = fallback_title
+
+    if not lines:
+        lines = [
+            "## 1. 核心内容",
+            "### 1.1 核心要点",
+            "1.1.1 背景与目标",
+            "1.1.2 关键分析",
+            "1.1.3 行动建议",
+        ]
+
+    return "\n".join([f"# {title}", *lines])
+
 def _outline_titles_for_response(structure: dict[str, Any]) -> list[str]:
     titles: list[str] = []
     for chapter in list(structure.get("chapters") or []):
@@ -353,6 +514,96 @@ def _outline_titles_for_response(structure: dict[str, Any]) -> list[str]:
             if sec_title:
                 titles.append(sec_title)
     return titles
+
+
+def _parse_point_detail_map(expanded_markdown: str) -> tuple[dict[str, str], dict[str, list[str]]]:
+    point_titles: dict[str, str] = {}
+    detail_map: dict[str, list[str]] = {}
+    current_key: str | None = None
+
+    for raw in str(expanded_markdown or "").splitlines():
+        line = str(raw).strip()
+        if not line or line.startswith("```"):
+            continue
+        if line.startswith("# "):
+            continue
+        if line.startswith("## "):
+            continue
+        if line.startswith("### "):
+            continue
+
+        normalized = line[5:].strip() if line.startswith("#### ") else line
+        m = re.match(r"^(\d+)\.(\d+)\.(\d+)\s+(.+)$", normalized)
+        if m:
+            key = f"{int(m.group(1))}.{int(m.group(2))}.{int(m.group(3))}"
+            point_title = _normalize_title(m.group(4))
+            if point_title:
+                point_titles[key] = point_title
+            current_key = key
+            detail_map.setdefault(key, [])
+            continue
+
+        if current_key is None:
+            continue
+
+        detail = _normalize_title(normalized)
+        if detail:
+            detail_map.setdefault(current_key, []).append(detail)
+
+    return point_titles, detail_map
+
+
+def _material_detail_fallback(material_text: str, point_title: str) -> str:
+    excerpt = _material_excerpt(material_text, point_title, max_chars=220)
+    if not excerpt:
+        return ""
+    parts = [
+        _normalize_title(part)
+        for part in re.split(r"[。；;！？!?\n]+", excerpt)
+        if _normalize_title(part)
+    ]
+    if parts:
+        return parts[0]
+    return _normalize_title(excerpt)
+
+
+def _canonicalize_content_markdown(
+    outline_markdown: str,
+    expanded_markdown: str,
+    topic: str,
+    material_text: str,
+) -> str:
+    outline_structure = _parse_outline_structure(outline_markdown, topic)
+    title = _normalize_title(str(outline_structure.get("title") or topic or "项目汇报")) or "项目汇报"
+    point_titles, detail_map = _parse_point_detail_map(expanded_markdown)
+
+    lines: list[str] = [f"# {title}"]
+    for cidx, chapter in enumerate(list(outline_structure.get("chapters") or []), start=1):
+        chapter_title = _normalize_title(str(chapter.get("title") or "")) or f"第{cidx}章"
+        lines.append(f"## {cidx}. {chapter_title}")
+
+        for sidx, section in enumerate(list(chapter.get("sections") or []), start=1):
+            section_title = _normalize_title(str(section.get("title") or "")) or f"第{cidx}.{sidx}节"
+            lines.append(f"### {cidx}.{sidx} {section_title}")
+
+            base_points = _clean_bullets([str(x) for x in list(section.get("points") or [])], limit=6)
+            if not base_points:
+                base_points = _default_body_points(section_title)
+
+            for pidx, base_point in enumerate(base_points, start=1):
+                key = f"{cidx}.{sidx}.{pidx}"
+                point_title = _normalize_title(point_titles.get(key) or base_point) or f"要点{pidx}"
+                lines.append(f"{key} {point_title}")
+
+                details = list(detail_map.get(key) or [])
+                detail = details[0] if details else ""
+                if not detail:
+                    detail = _material_detail_fallback(material_text, point_title)
+                if not detail:
+                    detail = f"围绕“{point_title}”补充背景、依据与行动建议。"
+                lines.append(detail)
+
+    return "\n".join(lines)
 
 
 def _outline_pages_from_structure(structure: dict[str, Any]) -> list[dict[str, Any]]:
@@ -385,12 +636,9 @@ def _outline_pages_from_structure(structure: dict[str, Any]) -> list[dict[str, A
     return pages
 
 
-def _build_outline_prompt(topic: str, material_text: str, target_pages: int, style: str) -> str:
+def _build_outline_prompt(topic: str, material_text: str, style: str) -> str:
     subject = _normalize_title(topic) or "项目汇报"
-    if target_pages > 0:
-        subject = f"{subject}（总页数控制在约{target_pages}页，按页数合理调整章节和小节数量）"
-
-    style_hint = "偏技术汇报，强调机制、实现与可验证指标。" if _normalize_style(style) == "technical" else "偏管理汇报，强调目标、结论、风险和行动。"
+    _ = style
     material = str(material_text or "").strip()
     if len(material) > 8000:
         material = material[:8000]
@@ -400,29 +648,26 @@ def _build_outline_prompt(topic: str, material_text: str, target_pages: int, sty
         material_block = f"\n\n参考资料（仅用于约束事实与补充背景，禁止编造资料中不存在的数字、时间和结论）：\n{material}"
 
     return f"""
-请为“{subject}”生成一个详细的PPT大纲, 涵盖内容请根据topic提供的信息生成一份与时俱进的完美的ppt大纲。
+你需要严格按 third-party 生成 PPT 大纲，输出必须是 Markdown，并且仅输出大纲本体。
 
-大纲应包含主要 6 个大的章节，每个章节下面要求有 3-5 个子章节，每个子章节进一步细分为 3 个小节, 不要生成 4 个小节。小节的数量应根据主题的复杂性灵活调整, 最多不超过6个。
+硬性要求（必须全部满足）：
+1. 第一行必须是 `# {subject}`，不要出现“PPT大纲”“大纲”这类前缀词。
+2. 必须包含 6 个一级章节，格式为 `## 1. ...` 到 `## 6. ...`。
+3. 每个一级章节下包含 3-5 个二级小节，格式为 `### 1.1 ...`。
+4. 每个二级小节下包含 3 条要点，格式为 `1.1.1 ...`、`1.1.2 ...`、`1.1.3 ...`。
+5. 只允许三层编号（到 `1.1.1`），禁止出现 `1.1.1.1`。
+6. 不允许输出封面页、目录页、致谢页等词汇。
+7. 只输出 Markdown 文本，不要解释，不要代码块标记。
 
-如果“{subject}”里面有要求子章节和小点的数量，请根据要求生成对应的子章节数量和小点数量。
+输出结构示例（必须同构）：
+# {subject}
+## 1. 章节标题
+### 1.1 小节标题
+1.1.1 要点一
+1.1.2 要点二
+1.1.3 要点三
 
-格式要求：
-
-生成一份PPT的大纲, 以行业总结性报告的形式显现。
-示例：
-
-1.1 标题名称
-1.1.1 简短描述要点1的内容。
-1.1.2 简短描述要点2的内容。
-1.1.3 简短描述要点3的内容。
-
-只需要精确到1.1.1就可以,不需要扩充到1.1.1.1这样的四级结构.
-
-只输出必要的数据, 不需要输出跟大纲无关的内容, 输出的结果以Markdown的格式输出。
-
-不需要输出总结性的文本。
-
-风格补充：{style_hint}{material_block}
+{material_block}
 """.strip()
 
 
@@ -439,38 +684,23 @@ def _build_content_prompt(outline_markdown: str, material_text: str) -> str:
 """
 
     return f"""
-你是一位PPTX大纲的编写人员, 需要根据以下要求对PPTX大纲结构进行解释和扩充.
+你要严格按 third-party 的内容扩充流程处理大纲。
 
-PPTX大纲结构规则:
-1 # 开头的表示PPTX的标题
-2 ## 开头的表示PPTX的某个章节
-3 ### 开头的表示的是某个章节下面的小节
-4 类似于这样'1.1.1'开头的是PPTX小节的内容项
+规则：
+1. 对所有 `#`、`##`、`###` 行必须逐字原样保留，不能改写、不能增删、不能重排。
+2. 对每一行 `1.1.1 ...` 这样的要点，必须在其下一行补充一段 20-50 字说明。
+3. 不要新增任何额外标题，不要输出封面、目录、致谢等额外内容。
+4. 输出必须为 Markdown 纯文本，不要加解释和代码块。
+5. 如果参考资料不足，可做稳健表述，但不能编造资料中没有的具体数字/时间/结论。
 
-你的任务:
-1 以# ## ###开头的标题,章节或是小节,则不需要做任何修改,直接按原有结构返回即可.
-2 把类似于这样'1.1.1'开头的是PPTX小节的内容项进行解释和扩充, 形成1.1.1.1的内容, 扩充后的内容要求在20 - 50个字之间.
-
-示例输入:
-### 1.1 AI生成PPTX的定义与背景
-1.1.1 定义AI生成PPTX的概念。
-1.1.2 介绍AI在办公自动化中的应用背景。
-1.1.3 分析PPTX格式在现代办公中的重要性。
-
-示例输出:
-### 1.1 AI生成PPTX的定义与背景
-1.1.1 定义AI生成PPTX的概念。
-AI生成PPTX是指利用人工智能技术自动创建演示文稿文件（PPTX）。这项技术结合自然语言处理和机器学习等领域，通过输入主题或文本，生成结构化和视觉化的演示内容，旨在提升用户的工作效率和创造力。
-1.1.2 介绍AI在办公自动化中的应用背景。
-在现代办公自动化中，AI技术被广泛应用于数据分析、文档生成、自动化流程等领域。诸如自然语言处理、图像识别等AI功能，极大地提高了工作效率，降低了繁琐的手动操作，使得办公软件能够更智能化地支持用户。
-1.1.3 分析PPTX格式在现代办公中的重要性。
-PPTX格式是Microsoft PowerPoint使用的演示文稿格式，被广泛用于商务会议、学术报告及教育培训中。其多媒体支持、丰富的动画效果和易操作的界面，使得PPTX成为信息传递的重要工具，能有效增强沟通效果与信息吸引力。
-
-注意事项:
-1 请注意: 本次要求只是对原有内容的内容项做扩充, 不需要对PPTX的大纲结构做任何修改.
-2 只输出必要的数据，不需要输出跟大纲无关的内容，输出的结果以Markdown的格式输出。
-3 不需要输出总结性的文本。
-4 '1.1.1 定义AI生成PPTX的概念。'前面不要加 ###
+输出示例：
+### 1.1 小节标题
+1.1.1 要点一
+对要点一的扩充说明（20-50字）。
+1.1.2 要点二
+对要点二的扩充说明（20-50字）。
+1.1.3 要点三
+对要点三的扩充说明（20-50字）。
 {material_block}
 以下是需要处理的文本:
 {outline_markdown}
@@ -554,7 +784,8 @@ def _outline_markdown_from_pages(topic: str, pages: list[dict[str, Any]]) -> str
 
 
 def _outline_bundle_from_raw(raw_markdown: str, topic_hint: str) -> dict[str, Any]:
-    structure = _parse_outline_structure(raw_markdown, topic_hint)
+    canonical_raw = _canonicalize_outline_markdown(raw_markdown, topic_hint)
+    structure = _parse_outline_structure(canonical_raw, topic_hint)
     outline_markdown = _outline_structure_to_markdown(structure)
     pages = _outline_pages_from_structure(structure)
     outline_titles = _outline_titles_for_response(structure)
@@ -565,6 +796,72 @@ def _outline_bundle_from_raw(raw_markdown: str, topic_hint: str) -> dict[str, An
         "title": _normalize_title(str(structure.get("title") or topic_hint or "项目汇报")) or "项目汇报",
     }
 
+
+def _outline_bundle_from_raw_preserve(raw_markdown: str, topic_hint: str) -> dict[str, Any]:
+    text = _sanitize_outline_markdown_for_third_party(raw_markdown, topic_hint).strip()
+    title = _sanitize_outline_title_text(topic_hint, fallback="Project Report") or "Project Report"
+    pages: list[dict[str, Any]] = []
+    current_page: dict[str, Any] | None = None
+    current_chapter = ""
+
+    for raw in text.splitlines():
+        line = str(raw or "").strip()
+        if not line or line.startswith("```"):
+            continue
+
+        if line.startswith("# "):
+            parsed_title = _sanitize_outline_title_text(line[2:], fallback=title)
+            if parsed_title:
+                title = parsed_title
+            continue
+
+        if line.startswith("## "):
+            chapter = _normalize_title(re.sub(r"^\d+\.?\s*", "", line[3:]))
+            if chapter:
+                current_chapter = chapter
+            current_page = None
+            continue
+
+        if line.startswith("### "):
+            section = _normalize_title(re.sub(r"^\d+\.\d+\s*", "", line[4:]))
+            if not section:
+                continue
+            current_page = {"title": section, "points": [], "chapter": current_chapter}
+            pages.append(current_page)
+            continue
+
+        if current_page is None:
+            continue
+
+        point = ""
+        m_point = re.match(r"^\d+\.\d+\.\d+\s+(.+)$", line)
+        if m_point:
+            point = _normalize_title(m_point.group(1))
+        elif line.startswith("- ") or line.startswith("* "):
+            point = _normalize_title(line[2:])
+        elif line.startswith("#### "):
+            point = _normalize_title(line[5:])
+
+        if point:
+            current_page["points"] = _clean_bullets([*list(current_page.get("points") or []), point], limit=12)
+
+    if not pages:
+        return _outline_bundle_from_raw(text, topic_hint)
+
+    for page in pages:
+        points = _clean_bullets([str(x) for x in list(page.get("points") or [])], limit=8)
+        if not points:
+            points = _default_body_points(str(page.get("title") or "Core Content"))
+        page["points"] = points
+        if not str(page.get("chapter") or "").strip():
+            page.pop("chapter", None)
+
+    return {
+        "outline_markdown": text,
+        "pages": pages,
+        "outline_titles": [str(p.get("title") or "").strip() for p in pages if str(p.get("title") or "").strip()],
+        "title": title,
+    }
 def _parse_expanded_content_sections(expanded_markdown: str) -> dict[str, Any]:
     ppt_title = ""
     chapters: list[dict[str, Any]] = []
@@ -819,7 +1116,8 @@ def _pick_latest_description_markdown(project_id: str) -> tuple[str, str]:
         except Exception:
             continue
         outline_markdown = str(payload.get("outline_markdown") or "").strip()
-        content_markdown = str(payload.get("content_markdown") or "").strip()
+        raw_content_markdown = str(payload.get("raw_content_markdown") or "").strip()
+        content_markdown = raw_content_markdown or str(payload.get("content_markdown") or "").strip()
         if outline_markdown and content_markdown:
             return outline_markdown, content_markdown
 
@@ -878,10 +1176,9 @@ class NewBackendFlowEngine:
         self.client = ModelClient()
         self.use_mock = bool(use_mock) or (not self.client.enabled())
 
-    def _mock_outline_markdown(self, topic: str, target_pages: int) -> str:
-        page_hint = max(8, int(target_pages or 8))
-        section_count = max(4, min(10, page_hint - 2))
-        chapter_count = 2 if section_count <= 6 else 3
+    def _mock_outline_markdown(self, topic: str) -> str:
+        section_count = 6
+        chapter_count = 3
 
         sections_per_chapter = [section_count // chapter_count] * chapter_count
         for idx in range(section_count % chapter_count):
@@ -915,13 +1212,23 @@ class NewBackendFlowEngine:
         self,
         topic: str,
         material_text: str,
-        target_pages: int,
         style: str,
     ) -> str:
         if self.use_mock:
-            return self._mock_outline_markdown(topic, target_pages)
+            return self._mock_outline_markdown(topic)
 
-        prompt = _build_outline_prompt(topic, material_text, target_pages, style)
+        prompt = _build_outline_prompt(topic, material_text, style)
+        chunks: list[str] = []
+        for chunk in self.client.chat_text_stream(
+            system_prompt=OUTLINE_SYSTEM_PROMPT,
+            user_prompt=prompt,
+            temperature=0.0,
+        ):
+            if chunk:
+                chunks.append(chunk)
+        merged = "".join(chunks).strip()
+        if merged:
+            return merged
         return self.client.chat_text(
             system_prompt=OUTLINE_SYSTEM_PROMPT,
             user_prompt=prompt,
@@ -932,14 +1239,13 @@ class NewBackendFlowEngine:
         self,
         topic: str,
         material_text: str,
-        target_pages: int,
         style: str,
     ) -> Iterator[str]:
         if self.use_mock:
-            yield self._mock_outline_markdown(topic, target_pages)
+            yield self._mock_outline_markdown(topic)
             return
 
-        prompt = _build_outline_prompt(topic, material_text, target_pages, style)
+        prompt = _build_outline_prompt(topic, material_text, style)
         yield from self.client.chat_text_stream(
             system_prompt=OUTLINE_SYSTEM_PROMPT,
             user_prompt=prompt,
@@ -951,6 +1257,17 @@ class NewBackendFlowEngine:
             return self._mock_expand_markdown(outline_markdown)
 
         prompt = _build_content_prompt(outline_markdown, material_text)
+        chunks: list[str] = []
+        for chunk in self.client.chat_text_stream(
+            system_prompt=CONTENT_SYSTEM_PROMPT,
+            user_prompt=prompt,
+            temperature=0.0,
+        ):
+            if chunk:
+                chunks.append(chunk)
+        merged = "".join(chunks).strip()
+        if merged:
+            return merged
         return self.client.chat_text(
             system_prompt=CONTENT_SYSTEM_PROMPT,
             user_prompt=prompt,
@@ -974,12 +1291,13 @@ _engine = NewBackendFlowEngine(use_mock=settings.use_mock_llm)
 
 
 class OutlinePreviewAdapter:
-    def generate_outline_bundle(self, title: str, style: str, material: str, target_pages: int) -> dict[str, Any]:
-        raw_markdown = _engine.generate_outline_markdown(title, material, target_pages, _normalize_style(style))
-        return _outline_bundle_from_raw(raw_markdown, title)
+    def generate_outline_bundle(self, title: str, style: str, material: str) -> dict[str, Any]:
+        raw_markdown = _engine.generate_outline_markdown(title, material, _normalize_style(style))
+        outline_markdown = _sanitize_outline_markdown_for_third_party(raw_markdown, title)
+        return _outline_bundle_from_raw_preserve(outline_markdown, title)
 
-    def generate_outline(self, title: str, style: str, material: str, target_pages: int) -> list[str]:
-        bundle = self.generate_outline_bundle(title, style, material, target_pages)
+    def generate_outline(self, title: str, style: str, material: str) -> list[str]:
+        bundle = self.generate_outline_bundle(title, style, material)
         return [str(x) for x in list(bundle.get("outline_titles") or [])]
 
 
@@ -990,16 +1308,16 @@ def stream_outline_preview_events(
     title: str,
     style: str,
     material_text: str,
-    target_pages: int,
 ) -> Iterator[dict[str, Any]]:
     full_text = ""
-    for chunk in _engine.stream_outline_markdown(title, material_text, target_pages, _normalize_style(style)):
+    for chunk in _engine.stream_outline_markdown(title, material_text, _normalize_style(style)):
         if not chunk:
             continue
         full_text += chunk
         yield {"type": "chunk", "text": chunk}
 
-    bundle = _outline_bundle_from_raw(full_text, title)
+    cleaned = _sanitize_outline_markdown_for_third_party(full_text, title)
+    bundle = _outline_bundle_from_raw_preserve(cleaned, title)
     yield {
         "type": "done",
         "outline": list(bundle.get("outline_titles") or []),
@@ -1012,29 +1330,45 @@ def _outline_bundle_for_project(
     requested_outline: list[str] | None = None,
     requested_outline_markdown: str | None = None,
 ) -> dict[str, Any]:
-    target_pages = int(project_row["target_pages"])
     project_title = str(project_row["title"] or "项目汇报")
 
     markdown_candidate = str(requested_outline_markdown or "").strip()
     if markdown_candidate:
-        return _outline_bundle_from_raw(markdown_candidate, project_title)
-
+        cleaned = _sanitize_outline_markdown_for_third_party(markdown_candidate, project_title)
+        return _outline_bundle_from_raw_preserve(cleaned, project_title)
     if requested_outline:
-        raw_text = "\n".join([str(item) for item in requested_outline if str(item).strip()])
-        if raw_text.strip():
-            return _outline_bundle_from_raw(raw_text, project_title)
-
+        pages: list[dict[str, Any]] = []
+        for item in requested_outline:
+            section = _normalize_title(str(item or ""))
+            if not section:
+                continue
+            pages.append({"title": section, "points": _default_body_points(section)})
+        if pages:
+            markdown_lines = [f"# {project_title}", "## 1. Core Content"]
+            for idx, page in enumerate(pages, start=1):
+                section_title = str(page.get("title") or f"Slide {idx}")
+                markdown_lines.append(f"### 1.{idx} {section_title}")
+                for pidx, point in enumerate(list(page.get("points") or []), start=1):
+                    markdown_lines.append(f"1.{idx}.{pidx} {point}")
+            return {
+                "outline_markdown": "\n".join(markdown_lines),
+                "pages": pages,
+                "outline_titles": [str(x.get("title") or "") for x in pages],
+                "title": project_title,
+            }
     existing_outline_text = str(project_row["outline_text"] or "").strip()
     if existing_outline_text and ("### " in existing_outline_text or "## " in existing_outline_text):
-        return _outline_bundle_from_raw(existing_outline_text, project_title)
+        cleaned = _sanitize_outline_markdown_for_third_party(existing_outline_text, project_title)
+        return _outline_bundle_from_raw_preserve(cleaned, project_title)
 
     material_text = _merge_outline_material(
         str(project_row["outline_text"] or ""),
         str(project_row["material_text"] or ""),
     )
     style = _normalize_style(project_row.get("style") if hasattr(project_row, "get") else project_row["style"])
-    raw_markdown = _engine.generate_outline_markdown(project_title, material_text, target_pages, style)
-    return _outline_bundle_from_raw(raw_markdown, project_title)
+    raw_markdown = _engine.generate_outline_markdown(project_title, material_text, style)
+    cleaned = _sanitize_outline_markdown_for_third_party(raw_markdown, project_title)
+    return _outline_bundle_from_raw_preserve(cleaned, project_title)
 
 
 def get_outline_for_project(
@@ -1080,6 +1414,7 @@ def rebuild_project_pages(project_id: str, outline_pages: list[dict[str, Any]], 
     project = get_project(project_id)
     topic = str(project["title"] or "项目汇报") if project else "项目汇报"
     markdown = str(outline_markdown or "").strip() or _outline_markdown_from_pages(topic, outline_pages)
+    markdown = _sanitize_outline_markdown_for_third_party(markdown, topic)
 
     update_project(
         project_id,
@@ -1143,6 +1478,7 @@ def _generate_descriptions_core(
     outline_markdown = str(project["outline_text"] or "").strip()
     if not outline_markdown:
         outline_markdown = _outline_markdown_from_pages(topic, outline_pages)
+    outline_markdown = _sanitize_outline_markdown_for_third_party(outline_markdown, topic)
 
     total_pages = _estimate_total_ppt_pages(outline_markdown)
     if on_progress:
@@ -1167,14 +1503,16 @@ def _generate_descriptions_core(
     except Exception:
         chunks = []
 
-    content_markdown = "".join(chunks).strip()
-    if not content_markdown:
-        content_markdown = _engine.expand_content_markdown(outline_markdown, material_text).strip()
-        if on_chunk and content_markdown:
-            on_chunk(content_markdown)
+    raw_content_markdown = "".join(chunks).strip()
+    if not raw_content_markdown:
+        raw_content_markdown = _engine.expand_content_markdown(outline_markdown, material_text).strip()
+        if on_chunk and raw_content_markdown:
+            on_chunk(raw_content_markdown)
 
-    if not content_markdown:
+    if not raw_content_markdown:
         raise RuntimeError("content expansion returned empty markdown")
+
+    content_markdown = str(raw_content_markdown).strip()
 
     payloads = _payloads_from_expanded_markdown(
         topic=topic,
@@ -1190,6 +1528,7 @@ def _generate_descriptions_core(
     return {
         "topic": topic,
         "outline_markdown": outline_markdown,
+        "raw_content_markdown": raw_content_markdown,
         "content_markdown": content_markdown,
         "total_ppt_pages": total_pages,
         "payloads": payloads,
@@ -1284,6 +1623,7 @@ def generate_descriptions_task(task_id: str, project_id: str) -> None:
             "result_json": json.dumps(
                 {
                     "outline_markdown": str(result.get("outline_markdown") or ""),
+                    "raw_content_markdown": str(result.get("raw_content_markdown") or ""),
                     "content_markdown": str(result.get("content_markdown") or ""),
                     "total_ppt_pages": int(result.get("total_ppt_pages") or 0),
                     "generated_pages": completed,
@@ -1309,6 +1649,7 @@ def stream_generate_descriptions_events(project_id: str) -> Iterator[dict[str, A
     material_text = str(project["material_text"] or "")
     outline_pages = _parse_outline_pages_from_rows(pages)
     outline_markdown = str(project["outline_text"] or "").strip() or _outline_markdown_from_pages(topic, outline_pages)
+    outline_markdown = _sanitize_outline_markdown_for_third_party(outline_markdown, topic)
     total_pages = _estimate_total_ppt_pages(outline_markdown)
 
     yield {
@@ -1332,11 +1673,13 @@ def stream_generate_descriptions_events(project_id: str) -> Iterator[dict[str, A
     except Exception:
         partial_text = ""
 
-    content_markdown = partial_text.strip()
-    if not content_markdown:
-        content_markdown = _engine.expand_content_markdown(outline_markdown, material_text)
-        if content_markdown:
-            yield {"type": "chunk", "text": content_markdown}
+    raw_content_markdown = partial_text.strip()
+    if not raw_content_markdown:
+        raw_content_markdown = _engine.expand_content_markdown(outline_markdown, material_text)
+        if raw_content_markdown:
+            yield {"type": "chunk", "text": raw_content_markdown}
+
+    content_markdown = str(raw_content_markdown or "").strip()
 
     payloads = _payloads_from_expanded_markdown(
         topic=topic,
@@ -1363,6 +1706,7 @@ def stream_generate_descriptions_events(project_id: str) -> Iterator[dict[str, A
         "current": total_pages,
         "generated_pages": completed,
         "failed_pages": failed,
+        "raw_content_markdown": raw_content_markdown,
         "content_markdown": content_markdown,
     }
 
@@ -1408,18 +1752,20 @@ def generate_ppt_task(task_id: str, project_id: str) -> None:
 
         outline_markdown, content_markdown = _pick_latest_description_markdown(project_id)
         if not outline_markdown:
-            outline_markdown = str(project["outline_text"] or "").strip() or _outline_markdown_from_pages(str(project["title"] or ""), _parse_outline_pages_from_rows(pages))
+            outline_markdown = str(project["outline_text"] or "").strip()
+        if not outline_markdown:
+            raise RuntimeError("outline markdown missing; please generate outline first")
         if not content_markdown:
-            content_markdown = _build_content_markdown_from_slides(outline_markdown, slides, str(project["title"] or ""))
+            raise RuntimeError("description markdown missing; please generate descriptions first")
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{project_id}_{ts}.pptx"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{project_id}_{ts}_{uuid4().hex[:8]}.pptx"
         out_path = Path(settings.export_dir) / filename
 
         exported = export_slides_to_pptx(
             slides=slides,
             out_path=out_path,
-            template_id=str(project["template_id"] or "no_template"),
+            template_id=str(project["template_id"] or "a2p_2"),
             topic=str(project["title"] or "项目汇报"),
             outline=outline_titles,
             subtitle="",
@@ -1464,3 +1810,7 @@ def generate_ppt_task(task_id: str, project_id: str) -> None:
                 "completed_at": utc_now_iso(),
             },
         )
+
+
+
+

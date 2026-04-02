@@ -8,6 +8,11 @@ set "FRONTEND_PORT=%~1"
 if "%FRONTEND_PORT%"=="" set "FRONTEND_PORT=5173"
 
 set "BACKEND_PORT=%~2"
+if "%BACKEND_PORT%"=="" (
+  if exist "%ROOT_DIR%.backend_port" (
+    for /f "usebackq delims=" %%p in ("%ROOT_DIR%.backend_port") do set "BACKEND_PORT=%%p"
+  )
+)
 if "%BACKEND_PORT%"=="" set "BACKEND_PORT=8001"
 
 set "VITE_API_BASE=http://127.0.0.1:%BACKEND_PORT%/api"
